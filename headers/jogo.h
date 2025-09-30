@@ -1,3 +1,6 @@
+#ifndef _jogo_h
+#define _jogo_h
+
 #include <vector>
 #include <iostream>
 #include <random>
@@ -138,7 +141,7 @@ class Estado
     Aposta _aposta_atual;
 
     public:
-    unsigned int _jogador_aposta_atual;
+    unsigned int _jogador_aposta_atual; //TODO: deixar privado 
     //Construtores
     Estado(unsigned int numero_jogadores=0, unsigned int tamanho_maos=0);
 
@@ -173,3 +176,5 @@ class Estado
     void print_obj() const;
     void print_tudo() const;
 };
+
+#endif //_jogo_h

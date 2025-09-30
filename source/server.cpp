@@ -9,13 +9,13 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-
-using namespace std;
+#include <string.h>
+#include "protocolo.h"
 
 int main()
 {
     Estado estado_jogo(NUMERO_JOGADORES, TAMANHO_MAOS);
-    vector<unsigned int> ordem_turnos;
+    std::vector<unsigned int> ordem_turnos;
     unsigned int jogador_atual = 0;
     Acao_resposta acao_recebida = {.acao_escolhida = 0, .valores_acao = NULL, .novo_valor = false};
     bool acao_valida = false;
@@ -35,7 +35,7 @@ int main()
     listen(socket_servidor, NUMERO_JOGADORES);
 
     //Registramos o socket na lista global de sockets usados pelo servidor, para que esses sejam encerrados corretamente ao final do programa.
-    estado_servidor.sockets_sistema.push_back(socket_servidor);
+    estado_servidor.sockets_servidor.push_back(socket_servidor);
 
     for(int i = 0; i < NUMERO_JOGADORES; ++i)
     {
@@ -43,11 +43,10 @@ int main()
         novo_socket = accept(socket_servidor, NULL, NULL);
         if (novo_socket >= 0)
         {
-            estado_servidor.sockets_sistema.push_back(novo_socket);
-
+            estado_servidor.sockets_jogadores.push_back(novo_socket);
+           
             pthread_t nova_thread;
             sem_init(&semaforos_jogadores[i], 0, 0);
-            // Passar parâmetros para a thread. (Indice jogador, socket, semaforo correto, semaforo servidor, acao_recebida)
             Estado_thread parametros_thread = {.indice_jogador = i, .socket = novo_socket, 
                 .semaforo_jogador = &semaforos_jogadores[i], .semaforo_servidor = &semaforo_servidor, .acao = &acao_recebida};
             pthread_create(&nova_thread, NULL, main_jogador, &parametros_thread);
@@ -66,15 +65,18 @@ int main()
     estado_jogo.aleatorizar_maos(LIMITE_FACE);        
     ordem_turnos = gera_ordem_aleatoria(NUMERO_JOGADORES);
 
+    envia_estado_inicial_mesa(estado_jogo);
+
     while (servidor_rodando.load())
     {
         estado_jogo++;
+        envia_estado_mesa(estado_jogo);
         jogador_atual = ordem_turnos[estado_jogo.get_turno_atual() % estado_jogo.get_numero_jogadores()];
         // std::cout << "Esperando jogada...\n";
-        cout << "Jogador atual: " << estado_jogo.get_lista_jogadores()[jogador_atual].get_numero() << endl;
-        cout << "Aposta atual: " << estado_jogo.get_aposta().get_numero_dados() << " | " << estado_jogo.get_aposta().get_dados().get_valor() << '\n';
+        std::cout << "Jogador atual: " << estado_jogo.get_lista_jogadores()[jogador_atual].get_numero() << std::endl;
+        std::cout << "Aposta atual: " << estado_jogo.get_aposta().get_numero_dados() << " | " << estado_jogo.get_aposta().get_dados().get_valor() << '\n';
 
-        while(acao_valida == false)
+        while(!acao_valida)
             acao_valida = esperar_acao(acao_recebida, estado_jogo, semaforo_servidor, semaforos_jogadores[jogador_atual], jogador_atual);
         
         acao_valida = false;
@@ -95,8 +97,11 @@ void cleanup_servidor(int sinal)
         pthread_join(estado_servidor.threads_sistema[i], nullptr);
     
     //Fecha os sockets do programa, um a um.
-    for(auto i = 0; i < (int)estado_servidor.sockets_sistema.size(); ++i)
-        close(estado_servidor.sockets_sistema[i]);
+    for(auto i = 0; i < (int)estado_servidor.sockets_jogadores.size(); ++i)
+        close(estado_servidor.sockets_jogadores[i]);
+    
+    for(auto i = 0; i < (int)estado_servidor.sockets_servidor.size(); ++i)
+        close(estado_servidor.sockets_servidor[i]);
     
     //Enfim finaliza o programa.
     exit(0);
@@ -110,36 +115,64 @@ void* main_jogador(void* parametros)
     int indice_jogador = parametros_thread.indice_jogador;
     int socket_jogador = parametros_thread.socket;
     Acao_resposta *acao_tomada = parametros_thread.acao;
+    Acao_resposta acao_convertida_buffer;
     
     int tamanho_mensagem = 0;
     char buffer[MENSAGEM_CLIENTE];
 
     while (servidor_rodando.load())
     {
+        //A thread do jogador espera pela permissão da thread principal para executar.
         sem_wait(&semaforo);
 
-        //TODO: Desserialização da mensagem (Converter de Big-Endian para modelo local (Big-Endian ou Little-Endian))  
+        //É feita a leitura do socket até que o número esperado de bytes seja enviado. Eles vão sendo concatenados ao buffer conforme são recebidos.
         while(tamanho_mensagem < MENSAGEM_CLIENTE)
             tamanho_mensagem += recv(socket_jogador, buffer + tamanho_mensagem, MENSAGEM_CLIENTE - tamanho_mensagem, 0);
 
+        //Uso do mutex para garantir que não hajam condições de corrida na variável a ser modificada.
         pthread_mutex_lock(&mutex_acao);
 
-        Acao_resposta acao_convertida_buffer = *(Acao_resposta*)buffer; 
+        //Desserializa a mensagem enviada, de forma a ter a correspondência correta de bytes para informação.
+        desserializa_mensagem(buffer, acao_convertida_buffer);
+
+        //Atribuímos a mensagem recebida à variável de ação que será lida pela thread principal.
         *acao_tomada = acao_convertida_buffer;
 
         // cout << "Acao lida!\n";
 
         // cout<< "Mutex trancado!\n";
         
+        //Desbloqueia-se o mutex após as operações.
         pthread_mutex_unlock(&mutex_acao);
         // std::cout << "Condicao sinalizada e mutex liberado!\n";
 
+        //Sinaliza para a thread principal que todas as ações foram completas.
         sem_post(&semaforo_servidor);
 
     }
 
     return nullptr;
+}
 
+void desserializa_mensagem(const char* buffer, Acao_resposta &acao)
+{
+    int offset = 0;
+
+    // Desserializa acao_escolhida
+    int tmp_int;
+    memcpy(&tmp_int, buffer + offset, sizeof(int));
+    acao.acao_escolhida = ntohl(tmp_int);
+    offset += sizeof(int);
+
+    // Desserializa valores_acao
+    for (int i = 0; i < 2; ++i) {
+        memcpy(&tmp_int, buffer + offset, sizeof(int));
+        acao.valores_acao[i] = ntohl(tmp_int);
+        offset += sizeof(int);
+    }
+
+    // Desserializa bool
+    acao.novo_valor = buffer[offset] != 0;
 }
 
 void* thread_debug_jogador(void* parametros)
@@ -212,21 +245,27 @@ bool esperar_acao(Acao_resposta &acao_recebida, Estado &estado_jogo, sem_t &sema
 {
     bool acao_valida = false;
     
+    //Sinaliza para a thread do jogador atual que essa pode executar.
     sem_post(&semaforo_jogador_atual);
+
+    //Espera pelo término da execução da thread do jogador.
     sem_wait(&semaforo_servidor);
 
     // cout << "entrando...\n";
 
+    //Tranca o mutex para evitar condições de corrida.
     pthread_mutex_lock(&mutex_acao);
 
     // cout << "Esperando mutex...\n";
     
     // cout << "Liberado!!!\n";
 
+    //Executa a ação enviada pelo jogador.
     acao_valida = !executar_acao(acao_recebida, estado_jogo, jogador_atual);
 
     // cout << "Acao executada!!!\n";
 
+    //Destranca o mutex após as operações.
     pthread_mutex_unlock(&mutex_acao);
 
     return acao_valida;
@@ -257,13 +296,13 @@ int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int indice_j
             if(checa_dados_mesa(estado_jogo) != MENOS)
             {
                 estado_jogo.tirar_dado_jogador(indice_jogador_atual);
-                cout << "tirando dado de: " << indice_jogador_atual+1 << endl;
+                std::cout << "tirando dado de: " << indice_jogador_atual+1 << std::endl;
             }
 
             else
             {
                 estado_jogo.tirar_dado_ultimo_jogador();
-                cout << "tirando dado de: " << estado_jogo._jogador_aposta_atual+1 << endl;
+                std::cout << "tirando dado de: " << estado_jogo._jogador_aposta_atual+1 << std::endl;
             }
 
             estado_jogo.set_aposta(Aposta(), 0);
@@ -378,6 +417,7 @@ bool checa_aposta_valida(const Aposta &nova_aposta, const Estado &estado_jogo)
 }
 
 int checa_dados_mesa(const Estado &estado_jogo)
+
 {
     Aposta aposta_mesa(0, Dado(estado_jogo.get_aposta().get_dados().get_valor()));
 
@@ -397,15 +437,34 @@ int checa_dados_mesa(const Estado &estado_jogo)
 
 }
 
-vector<unsigned int> gera_ordem_aleatoria(unsigned int tamanho)
+std::vector<unsigned int> gera_ordem_aleatoria(unsigned int tamanho)
 {
-    vector<unsigned int> vetor_aleatorio(tamanho);
+    std::vector<unsigned int> vetor_aleatorio(tamanho);
     for (unsigned int i = 0; i < tamanho; ++i)
         vetor_aleatorio[i] = i;
 
-    random_device rd;
-    mt19937 gen(rd());
+    std::random_device rd;
+    std::mt19937 gen(rd());
     shuffle(vetor_aleatorio.begin(), vetor_aleatorio.end(), gen);
 
     return vetor_aleatorio;
+}
+
+void envia_estado_mesa(const Estado &estado_jogo)
+{
+    //A estruturação da mensagem de estado será feita
+    unsigned int tamanho_mensagem = 0;
+    unsigned int numero_dados_mesa = 0;
+    unsigned int rodada = 0;
+
+
+}
+
+void envia_estado_inicial_mesa(const Estado &estado_jogo)
+{
+    for (unsigned int i = 0; i < estado_servidor.sockets_jogadores.size(); ++i)
+    {
+        printf("Enviando...\n");
+        enviar_mensagem(estado_servidor.sockets_jogadores[i], NULL, 0, Heartbeat);
+    }
 }
