@@ -11,7 +11,7 @@
 #define NUMERO_JOGADORES 1
 #define LIMITE_FACE 6
 #define MENSAGEM_CLIENTE sizeof(Acao_resposta)
-#define PORTA 4612
+#define PORTA 4872
 
 typedef struct _estrutura_acoes
 {
@@ -21,28 +21,40 @@ typedef struct _estrutura_acoes
 
 } Acao_resposta;
 
+typedef struct __jogador_cliente
+{
+    Jogador instancia;
+    pthread_t thread;
+    sem_t semaforo;
+    int socket;
+} Jogador_cliente;
+
 typedef struct _estado_global
 {
-    std::vector<pthread_t> threads_sistema;
+    pthread_t thread_socket;
+    sem_t semaforo_servidor;
+    int socket_servidor;
+    std::vector<pthread_t> threads_jogadores;
     std::vector<int> sockets_jogadores;
-    std::vector<int> sockets_servidor;
+    std::vector<sem_t> semaforos_jogadores;
 
 } Estado_global;
 
 typedef struct _estado_thread
 {
-    unsigned int indice_jogador;
+    unsigned int numero_jogador;
     int socket;
-    sem_t* semaforo_jogador, *semaforo_servidor;
+    sem_t* semaforo_jogador;
     Acao_resposta* acao;
 
 } Estado_thread;
 
 enum Acoes
 {
-    AUMENTAR_APOSTA,
-    DUVIDAR,
-    CRAVAR
+    AUMENTAR_APOSTA = 1,
+    DUVIDAR = 2,
+    CRAVAR = 3,
+    SAIR = 4
 };
 
 enum Valores_Dados
@@ -66,21 +78,13 @@ enum Possibilidades
 //Variáveis e funções de controle global do processo. Serão necessárias para desalocar memória e encerrar o programa corretamente.
 Estado_global estado_servidor = {};
 std::atomic<bool> servidor_rodando(true);
-void cleanup_servidor(int sinal);
 pthread_mutex_t mutex_acao = PTHREAD_MUTEX_INITIALIZER;
-
-
-//DEBUG
-pthread_cond_t condicao_acao = PTHREAD_COND_INITIALIZER;
-sem_t semaforo_acao;
-void* thread_debug_jogador(void* parametros);
-//FIM
+void cleanup_servidor();
+void sinalizar_desligamento(int sinal);
 
 //Função que define a subrotina associada a cada jogador.
 void* main_jogador(void* parametros);
-
-//Funções para auxiliar na comunicação entre sockets.
-void desserializa_mensagem(const char* buffer, Acao_resposta &acao);
+void* comunicacao_socket(void* parametros);
 
 //Funções associadas ao jogo. São utilitárias e auxiliam no fluxo do processamento do jogo pelo servidor.
 std::vector<unsigned int> gera_ordem_aleatoria(unsigned int tamanho);

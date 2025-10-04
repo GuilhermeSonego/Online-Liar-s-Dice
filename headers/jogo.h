@@ -20,9 +20,10 @@ class Dado
     void aleatorizar_valor(unsigned int limite_face);
 
     //Getters
-    const int get_valor() const {return this->_valor;}
+    int get_valor() const {return this->_valor;}
 
     //Setters
+    void set_valor(int numero) {this->_valor = numero;}
 
     //Sobrecarga de Operadores
     Dado& operator=(const Dado& outro) {if (this != &outro) this->_valor = outro._valor; return *this;}
@@ -38,7 +39,8 @@ class Mao
 
     public:
     //Construtores
-    Mao(unsigned int numero = 0, unsigned int limite = 0) : _limite_face(limite) {this->_dados = std::vector<Dado>(numero);}
+    Mao(unsigned int numero = 0, unsigned int limite_face = 0) : _limite_face(limite_face) {this->_dados = std::vector<Dado>(numero);}
+    Mao(int* valores, unsigned int numero_dados);
 
     //Métodos
     void aleatorizar(unsigned int limite_face);
@@ -51,7 +53,8 @@ class Mao
 
     //Setters
     void set_tamanho_mao(unsigned int tamanho = 0) {this->_dados.resize(tamanho);}
-    
+  
+    //Sobrecarga de operadores
 };
 
 class Jogador
@@ -124,7 +127,9 @@ class Jogada
 
     //Setters
 
-    friend std::ostream& operator<<(std::ostream& os, const Jogada& jogada) {
+    //Sobrecarga de operadores
+    friend std::ostream& operator<<(std::ostream& os, const Jogada& jogada) 
+    {
         os << "Numero de dados: " << jogada._aposta_feita.get_numero_dados()
            << " | Valor dos dados: " << jogada._aposta_feita.get_dados().get_valor();
         return os;
@@ -135,19 +140,18 @@ class Jogada
 class Estado
 {
     private:
-    unsigned int _tamanho_maos, _turno_atual, _quantia_dados; //_jogador_aposta_atual;
+    unsigned int _tamanho_maos, _turno_atual, _quantia_dados, _jogador_aposta_atual, _jogador_turno_atual;
     std::vector<Jogador> _jogadores;
     std::vector<Jogada> _jogadas, _buffer_jogadas;
     Aposta _aposta_atual;
 
     public:
-    unsigned int _jogador_aposta_atual; //TODO: deixar privado 
     //Construtores
     Estado(unsigned int numero_jogadores=0, unsigned int tamanho_maos=0);
 
     //Métodos
     void aleatorizar_maos(unsigned int quantidade_lados);
-    void tirar_dado_jogador(unsigned int indice_jogador) {this->_jogadores[indice_jogador].perder_dado(); _quantia_dados--;}
+    void tirar_dado_jogador(unsigned int numero_jogador) {this->get_jogador(numero_jogador).perder_dado(); _quantia_dados--;}
     void tirar_dado_ultimo_jogador() {this->tirar_dado_jogador(_jogador_aposta_atual);}
     void resetar_ultimas_jogadas() {this->_buffer_jogadas.clear();}
 
@@ -155,6 +159,10 @@ class Estado
     const unsigned int get_turno_atual() const {return _turno_atual;}
     const unsigned int get_tamanho_maos() const {return _tamanho_maos;}
     const unsigned int get_numero_jogadores() const {return this->_jogadores.size();}
+    const unsigned int get_jogador_aposta_atual() const {return this->_jogador_aposta_atual;}
+    const unsigned int get_jogador_turno_atual() const {return this->_jogador_turno_atual;}
+    const Jogador& get_jogador(unsigned int numero) const;
+    Jogador& get_jogador(unsigned int numero);
     const Aposta& get_aposta() const {return _aposta_atual;}
     const std::vector<Jogada>& get_lista_jogadas() const {return _jogadas;}
     const std::vector<Jogada>& get_ultimas_jogadas() const {return _buffer_jogadas;}
@@ -167,6 +175,7 @@ class Estado
     void set_aposta(Aposta nova_aposta, unsigned int jogador_responsavel) {this->_aposta_atual = nova_aposta; this->_jogador_aposta_atual = jogador_responsavel;}
     void adiciona_jogada(Jogada nova_jogada) {this->_jogadas.push_back(nova_jogada); this->_buffer_jogadas.push_back(nova_jogada);}
     void set_jogadores(std::vector<Jogador> novos_jogadores) {this->_jogadores = novos_jogadores;}
+    void set_jogador_turno_atual(unsigned int numero) {this->_jogador_turno_atual = numero;}
 
     //Sobrecarga de Operadores
     void operator++() {this->_turno_atual++;}

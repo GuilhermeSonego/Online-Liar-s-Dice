@@ -1,26 +1,85 @@
 #include "protocolo.h"
 #include <arpa/inet.h>
 #include <string.h>
-#include <stdio.h>
+#include <iostream>
 #include <stdlib.h>
+#include <unistd.h>
 
-void enviar_mensagem(int socket_destino, const void *informacoes, unsigned int tamanho_mensagem, int tipo_mensagem)
+bool enviar_mensagem(int socket_destino, const void *informacoes, unsigned int tamanho_mensagem, int tipo_mensagem)
 {
-    char *byte_buffer = (char*)informacoes;
-    Header_protocolo header = {.tamanho_mensagem = htonl(tamanho_mensagem), .tipo_mensagem = htonl(tipo_mensagem)};
+    Header_protocolo header = {.tamanho_mensagem = tamanho_mensagem, .tipo_mensagem = tipo_mensagem};
+    bool sucesso_escrita = true;
+    unsigned tamanho_total_buffer = tamanho_mensagem + HEADER_TAMANHO;
+    char* buffer_saida = (char*)malloc(tamanho_total_buffer);
+    char* itera_buffer = buffer_saida;
 
     switch(tipo_mensagem)
     {
         case Heartbeat:
         {
-            char buffer_saida[HEARTBEAT_TAMANHO];
-            char* itera_buffer;
+            escreve_cabecalho(itera_buffer, header);
+        }
+        break;
 
-            itera_buffer = buffer_saida;
+        case Estado_inicial:
+        {
+            Estado_inicial_msg* buffer_entrada = (Estado_inicial_msg*)informacoes;
+            unsigned int numero_jogador_atual = buffer_entrada->numero_jogador_atual;
+            unsigned int n_dados_jogador_atual = 0;
 
             escreve_cabecalho(itera_buffer, header);
 
-            send_completo(socket_destino, buffer_saida, sizeof(buffer_saida));
+            escreve_serializado(itera_buffer, buffer_entrada->numero_jogadores);
+            escreve_serializado(itera_buffer, buffer_entrada->numero_jogador_atual);
+
+            
+            for(unsigned int i = 0; i < buffer_entrada->numero_jogadores; ++i)
+            {
+                escreve_serializado(itera_buffer, buffer_entrada->dados_jogadores[i].numero_jogador);
+                escreve_serializado(itera_buffer, buffer_entrada->dados_jogadores[i].n_dados);
+
+                if(buffer_entrada->dados_jogadores[i].numero_jogador == numero_jogador_atual)
+                    n_dados_jogador_atual = buffer_entrada->dados_jogadores[i].n_dados;
+            }
+
+            for(unsigned int i = 0; i < n_dados_jogador_atual; ++i)
+                escreve_serializado(itera_buffer, (unsigned int)buffer_entrada->valor_dados_jogador[i]);
+        }
+        break;
+
+        case Estado_mesa:
+        {
+            Estado_mesa_msg* buffer_entrada = (Estado_mesa_msg*)informacoes;
+            
+            escreve_cabecalho(itera_buffer, header);
+
+            escreve_serializado(itera_buffer, buffer_entrada->rodada);
+            escreve_serializado(itera_buffer, buffer_entrada->n_dados_aposta);
+            escreve_serializado(itera_buffer, buffer_entrada->face_dados_aposta);
+            escreve_serializado(itera_buffer, buffer_entrada->jogador_atual);
+        }
+        break;
+
+        case Aumento_aposta:
+        {
+            Aposta_msg* buffer_entrada = (Aposta_msg*)informacoes;
+
+            escreve_cabecalho(itera_buffer, header);
+
+            escreve_serializado(itera_buffer, buffer_entrada->n_dados_aposta);
+            escreve_serializado(itera_buffer, buffer_entrada->face_dados_aposta);
+        }
+        break;
+
+        case Duvida:
+        {
+            escreve_cabecalho(itera_buffer, header);
+        }
+        break;
+
+        case Cravada:
+        {
+            escreve_cabecalho(itera_buffer, header);
         }
         break;
 
@@ -28,13 +87,144 @@ void enviar_mensagem(int socket_destino, const void *informacoes, unsigned int t
         break;
     }
 
+    std::cout << "Enviados: " << tamanho_total_buffer << "bytes\n";
+    sucesso_escrita = send_completo(socket_destino, buffer_saida, tamanho_total_buffer);
+    free(buffer_saida);
+
+    return sucesso_escrita;
 }
 
-void receber_mensagem(int socket_destino)
+Mensagem receber_mensagem(int socket_destino)
 {
-    
+    char buffer_header[HEADER_TAMANHO];
+    char* buffer_conteudo_mensagem = nullptr;
+    char* itera_buffer;
+    Header_protocolo header_mensagem = {};
+    Mensagem mensagem_recebida = {};
+    bool sucesso_leitura = true;
 
+    sucesso_leitura = le_para_buffer(socket_destino, buffer_header, HEADER_TAMANHO);
+
+    if(!sucesso_leitura)
+    {   
+        mensagem_recebida.tipo_mensagem = Falha;
+        return mensagem_recebida;
+    }
+
+    memcpy(&header_mensagem, buffer_header, HEADER_TAMANHO);
+
+    header_mensagem = {.tamanho_mensagem = ntohl(header_mensagem.tamanho_mensagem), 
+        .tipo_mensagem = (int)ntohl(header_mensagem.tipo_mensagem)};
+
+
+    buffer_conteudo_mensagem = (char*)malloc(header_mensagem.tamanho_mensagem);
+    itera_buffer = buffer_conteudo_mensagem;
+    mensagem_recebida.tipo_mensagem = header_mensagem.tipo_mensagem;
+
+    switch(header_mensagem.tipo_mensagem)
+    {
+        case Heartbeat:
+        {
+            mensagem_recebida.conteudo_mensagem = nullptr;
+        }
+        break;
+
+        case Estado_inicial:
+        {
+            Estado_inicial_msg* estrutura_mensagem = (Estado_inicial_msg*)malloc(sizeof(Estado_inicial_msg));
+            unsigned int n_dados_jogador_atual = 0;
+
+            sucesso_leitura = le_para_buffer(socket_destino, buffer_conteudo_mensagem, header_mensagem.tamanho_mensagem);
+
+            if(!sucesso_leitura)
+            {   
+                mensagem_recebida.tipo_mensagem = Falha;
+                break;
+            }
+
+            escreve_desserializado(&estrutura_mensagem->numero_jogadores, itera_buffer, sizeof(estrutura_mensagem->numero_jogadores));
+            escreve_desserializado(&estrutura_mensagem->numero_jogador_atual, itera_buffer, sizeof(estrutura_mensagem->numero_jogador_atual));
+
+            estrutura_mensagem->dados_jogadores = (_dados_jogador*)malloc(estrutura_mensagem->numero_jogadores*sizeof(_dados_jogador));
+
+            for(unsigned int i = 0; i < estrutura_mensagem->numero_jogadores; ++i)
+            {
+                escreve_desserializado(&estrutura_mensagem->dados_jogadores[i].numero_jogador, itera_buffer, sizeof(estrutura_mensagem->dados_jogadores->numero_jogador));
+                escreve_desserializado(&estrutura_mensagem->dados_jogadores[i].n_dados, itera_buffer, sizeof(estrutura_mensagem->dados_jogadores->n_dados));
+
+                if(estrutura_mensagem->dados_jogadores[i].numero_jogador == estrutura_mensagem->numero_jogador_atual)
+                    n_dados_jogador_atual = estrutura_mensagem->dados_jogadores[i].n_dados;
+            }
+
+            estrutura_mensagem->valor_dados_jogador = (int*)malloc(n_dados_jogador_atual*sizeof(*estrutura_mensagem->valor_dados_jogador));
+
+            for(unsigned int i = 0; i < n_dados_jogador_atual; ++i)
+                escreve_desserializado(&estrutura_mensagem->valor_dados_jogador[i], itera_buffer, sizeof(*estrutura_mensagem->valor_dados_jogador));
+            
+            mensagem_recebida.conteudo_mensagem = estrutura_mensagem;
+        }
+        break;
+
+        case Estado_mesa:
+        {
+            Estado_mesa_msg* estrutura_mensagem = (Estado_mesa_msg*)malloc(sizeof(Estado_mesa_msg));
+
+            sucesso_leitura = le_para_buffer(socket_destino, buffer_conteudo_mensagem, header_mensagem.tamanho_mensagem);
+
+            if(!sucesso_leitura)
+            {
+                mensagem_recebida.tipo_mensagem = Falha;
+                break;
+            }
+
+            escreve_desserializado(&estrutura_mensagem->rodada, itera_buffer, sizeof(estrutura_mensagem->rodada));
+            escreve_desserializado(&estrutura_mensagem->n_dados_aposta, itera_buffer, sizeof(estrutura_mensagem->n_dados_aposta));
+            escreve_desserializado(&estrutura_mensagem->face_dados_aposta, itera_buffer, sizeof(estrutura_mensagem->face_dados_aposta));
+            escreve_desserializado(&estrutura_mensagem->jogador_atual, itera_buffer, sizeof(estrutura_mensagem->jogador_atual));
+
+            mensagem_recebida.conteudo_mensagem = estrutura_mensagem;
+        }
+        break;
+
+        case Aumento_aposta:
+        {
+            Aposta_msg* estrutura_mensagem = (Aposta_msg*)malloc(sizeof(Estado_mesa_msg));
+
+            sucesso_leitura = le_para_buffer(socket_destino, buffer_conteudo_mensagem, header_mensagem.tamanho_mensagem);
+
+            if(!sucesso_leitura)
+            {
+                mensagem_recebida.tipo_mensagem = Falha;
+                break;
+            }
+
+            escreve_desserializado(&estrutura_mensagem->n_dados_aposta, itera_buffer, sizeof(estrutura_mensagem->n_dados_aposta));
+            escreve_desserializado(&estrutura_mensagem->face_dados_aposta, itera_buffer, sizeof(estrutura_mensagem->face_dados_aposta));
+
+            mensagem_recebida.conteudo_mensagem = estrutura_mensagem;   
+        }
+        break;
+
+        case Duvida:
+        {
+            mensagem_recebida.conteudo_mensagem = nullptr;
+        }
+        break;
+
+        case Cravada:
+        {
+            mensagem_recebida.conteudo_mensagem = nullptr;
+        }
+        break;
+
+        default:
+        break;
+    }
+
+    free(buffer_conteudo_mensagem);
+    return mensagem_recebida;
 }
+
 
 void escreve_pro_buffer(char* &buffer, const void* valor, unsigned int tamanho)
 {
@@ -42,23 +232,96 @@ void escreve_pro_buffer(char* &buffer, const void* valor, unsigned int tamanho)
     buffer += tamanho;
 }
 
-void escreve_cabecalho(char* &buffer, const struct Header_protocolo &cabecalho)
+void escreve_para_campo(void* campo, char* &buffer, unsigned int tamanho)
 {
-    escreve_pro_buffer(buffer, &cabecalho.tamanho_mensagem, sizeof(cabecalho.tamanho_mensagem));
-    escreve_pro_buffer(buffer, &cabecalho.tipo_mensagem, sizeof(cabecalho.tipo_mensagem));
+    memcpy(campo, buffer, tamanho);
+    buffer += tamanho;
 }
 
-void send_completo(int socket, const void *buffer, unsigned int tamanho) 
+void escreve_serializado(char* &buffer, unsigned int valor)
+{
+    valor = htonl(valor);
+    escreve_pro_buffer(buffer, &valor, sizeof(valor));
+}
+
+void escreve_desserializado(void* campo, char* &buffer, unsigned int tamanho)
+{
+    escreve_para_campo(campo, buffer, tamanho);
+    *(unsigned int*)campo = ntohl(*(unsigned int*)campo);
+}
+
+void escreve_cabecalho(char* &buffer, const struct Header_protocolo &cabecalho)
+{
+    escreve_serializado(buffer, cabecalho.tamanho_mensagem);
+    escreve_serializado(buffer, cabecalho.tipo_mensagem);
+}
+
+bool le_para_buffer(int socket, char* buffer, unsigned int tamanho)
+{
+    unsigned int bytes_lidos = 0;
+    int recebidos = 0;
+
+    while (bytes_lidos < tamanho) 
+    {
+        recebidos = recv(socket, buffer + bytes_lidos, tamanho - bytes_lidos, 0);
+        if (recebidos <= 0) 
+            return false;
+
+        bytes_lidos += recebidos;
+    }   
+
+    return true;
+}
+
+bool send_completo(int socket, const void *buffer, unsigned int tamanho) 
 {
     unsigned int total = 0;
     const char *itera_buffer = (const char*)buffer;
     unsigned int enviados;
 
-    while (total < tamanho) {
-        enviados = send(socket, itera_buffer + total, tamanho - total, 0);
+    while (total < tamanho) 
+    {
+        enviados = send(socket, itera_buffer + total, tamanho - total, MSG_NOSIGNAL);
         if (enviados <= 0)
-            return;
+            return false;
 
         total += enviados;
+    }
+
+    return true;
+}
+
+void free_mensagem(Mensagem mensagem_usada)
+{
+    switch(mensagem_usada.tipo_mensagem)
+    {
+        case Estado_inicial:
+        {
+            Estado_inicial_msg* ponteiro_estado_inicial = (Estado_inicial_msg*) mensagem_usada.conteudo_mensagem;
+
+            free(ponteiro_estado_inicial->dados_jogadores);
+            free(ponteiro_estado_inicial->valor_dados_jogador);
+            free(ponteiro_estado_inicial);
+        }
+        break;
+
+        case Estado_mesa:
+        {
+            Estado_mesa_msg* ponteiro_estado_mesa = (Estado_mesa_msg*)mensagem_usada.conteudo_mensagem;
+
+            free(ponteiro_estado_mesa);
+        }
+        break;
+
+        case Aumento_aposta:
+        {
+            Aposta_msg* ponteiro_aposta = (Aposta_msg*)mensagem_usada.conteudo_mensagem;
+
+            free(ponteiro_aposta);
+        }
+        break;
+
+        default:
+        break;
     }
 }

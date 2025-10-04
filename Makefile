@@ -17,7 +17,7 @@ BIN_DIR := exec
 
 SRC_TESTE    := $(SRC_DIR)/jogo.cpp 
 SRC_PRODUCAO := $(SRC_DIR)/main_producao.cpp $(SRC_DIR)/utils.cpp $(SRC_DIR)/db.cpp
-SRC_CLIENTE  := $(SRC_DIR)/cliente.cpp #$(SRC_DIR)/ui.cpp
+SRC_CLIENTE  := $(SRC_DIR)/cliente.cpp $(SRC_DIR)/protocolo.cpp $(SRC_DIR)/jogo.cpp #$(SRC_DIR)/ui.cpp
 SRC_SERVIDOR := $(SRC_DIR)/server.cpp $(SRC_DIR)/jogo.cpp $(SRC_DIR)/protocolo.cpp
 
 # Transformar .cpp → .o em obj/

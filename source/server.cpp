@@ -19,48 +19,16 @@ int main()
     unsigned int jogador_atual = 0;
     Acao_resposta acao_recebida = {.acao_escolhida = 0, .valores_acao = NULL, .novo_valor = false};
     bool acao_valida = false;
-    int socket_servidor;
-    std::vector<sem_t> semaforos_jogadores(NUMERO_JOGADORES);
-    sem_t semaforo_servidor;
-    struct sockaddr_in info_socket;
-    pthread_t debug_jogador;
 
     //Definição de uma função responsável pelo desligamento do programa pela evocação do CTRL + C.
-    signal(SIGINT, cleanup_servidor);
+    signal(SIGINT, sinalizar_desligamento);
+    
+    //Iremos tratar desconexões manualmente, portanto dizemos ao sistema que iremos ignorar sinais de erro.
+    signal(SIGPIPE, SIG_IGN);
 
-    //Procedimentos para a criação do socket, seu binding e definição de modo em escuta.
-    socket_servidor = socket(AF_INET, SOCK_STREAM, 0);
-    info_socket = {.sin_family = AF_INET, .sin_port = htons(PORTA), .sin_addr = INADDR_ANY};
-    bind(socket_servidor, (struct sockaddr*)&info_socket, sizeof(info_socket));
-    listen(socket_servidor, NUMERO_JOGADORES);
+    pthread_create(&estado_servidor.thread_socket, NULL, comunicacao_socket, &acao_recebida);
 
-    //Registramos o socket na lista global de sockets usados pelo servidor, para que esses sejam encerrados corretamente ao final do programa.
-    estado_servidor.sockets_servidor.push_back(socket_servidor);
-
-    for(int i = 0; i < NUMERO_JOGADORES; ++i)
-    {
-        int novo_socket;
-        novo_socket = accept(socket_servidor, NULL, NULL);
-        if (novo_socket >= 0)
-        {
-            estado_servidor.sockets_jogadores.push_back(novo_socket);
-           
-            pthread_t nova_thread;
-            sem_init(&semaforos_jogadores[i], 0, 0);
-            Estado_thread parametros_thread = {.indice_jogador = i, .socket = novo_socket, 
-                .semaforo_jogador = &semaforos_jogadores[i], .semaforo_servidor = &semaforo_servidor, .acao = &acao_recebida};
-            pthread_create(&nova_thread, NULL, main_jogador, &parametros_thread);
-
-            estado_servidor.threads_sistema.push_back(nova_thread);
-        }
-    }
-
-    sem_init(&semaforo_servidor, 0, 0);
-
-    // sem_init(&semaforo_acao, 0, 0);
-
-    // pthread_create(&debug_jogador, NULL, thread_debug_jogador, &acao_recebida);
-    // estado_servidor.threads_sistema.push_back(debug_jogador);
+    pthread_join(estado_servidor.thread_socket, nullptr);
 
     estado_jogo.aleatorizar_maos(LIMITE_FACE);        
     ordem_turnos = gera_ordem_aleatoria(NUMERO_JOGADORES);
@@ -70,52 +38,117 @@ int main()
     while (servidor_rodando.load())
     {
         estado_jogo++;
-        envia_estado_mesa(estado_jogo);
-        jogador_atual = ordem_turnos[estado_jogo.get_turno_atual() % estado_jogo.get_numero_jogadores()];
-        // std::cout << "Esperando jogada...\n";
-        std::cout << "Jogador atual: " << estado_jogo.get_lista_jogadores()[jogador_atual].get_numero() << std::endl;
-        std::cout << "Aposta atual: " << estado_jogo.get_aposta().get_numero_dados() << " | " << estado_jogo.get_aposta().get_dados().get_valor() << '\n';
 
-        while(!acao_valida)
-            acao_valida = esperar_acao(acao_recebida, estado_jogo, semaforo_servidor, semaforos_jogadores[jogador_atual], jogador_atual);
+        jogador_atual = ordem_turnos[estado_jogo.get_turno_atual() % estado_jogo.get_numero_jogadores()];
+        jogador_atual = estado_jogo.get_lista_jogadores()[jogador_atual].get_numero();
+        estado_jogo.set_jogador_turno_atual(jogador_atual);
+
+        envia_estado_mesa(estado_jogo);
+
+        sleep(10);
+        // std::cout << "Esperando jogada...\n";
+        // std::cout << "Jogador atual: " << jogador_atual << std::endl;
+        // std::cout << "Aposta atual: " << estado_jogo.get_aposta().get_numero_dados() << " | " << estado_jogo.get_aposta().get_dados().get_valor() << '\n';
+
+        // while(!acao_valida)
+            // acao_valida = esperar_acao(acao_recebida, estado_jogo, semaforo_servidor, semaforos_jogadores[jogador_atual-1], jogador_atual);
         
         acao_valida = false;
         
-        estado_jogo.print_tudo();
+        // estado_jogo.print_tudo();
     }
     
-    cleanup_servidor(SIGINT);
+    sinalizar_desligamento(SIGINT);
+    cleanup_servidor();
 }
 
-void cleanup_servidor(int sinal)
+void cleanup_servidor()
 {
-    //Definindo a flag de execução do servidor como falsa, encerrando assim threads em loop.
-    servidor_rodando.store(false);
-
     //Espera o fim de todas as threads abertas no programa, uma a uma.
-    for(auto i = 0; i < (int)estado_servidor.threads_sistema.size(); ++i)
-        pthread_join(estado_servidor.threads_sistema[i], nullptr);
+    for(auto i = 0; i < (int)estado_servidor.threads_jogadores.size(); ++i)
+        pthread_join(estado_servidor.threads_jogadores[i], nullptr);
     
-    //Fecha os sockets do programa, um a um.
-    for(auto i = 0; i < (int)estado_servidor.sockets_jogadores.size(); ++i)
-        close(estado_servidor.sockets_jogadores[i]);
-    
-    for(auto i = 0; i < (int)estado_servidor.sockets_servidor.size(); ++i)
-        close(estado_servidor.sockets_servidor[i]);
+    close(estado_servidor.socket_servidor);
     
     //Enfim finaliza o programa.
     exit(0);
+}
+
+void sinalizar_desligamento(int sinal)
+{
+    servidor_rodando.store(false);
+
+    shutdown(estado_servidor.socket_servidor, SHUT_RDWR);
+    
+    for (unsigned int i = 0; i < estado_servidor.sockets_jogadores.size(); ++i)
+        shutdown(estado_servidor.sockets_jogadores[i], SHUT_RDWR);
+
+    // Sinaliza semáforos das threads de jogador
+    for (unsigned int i = 0 ; i < estado_servidor.semaforos_jogadores.size(); ++i)
+        sem_post(&estado_servidor.semaforos_jogadores[i]);
+}
+
+void* comunicacao_socket(void* parametros)
+{
+    struct sockaddr_in info_socket;
+    Estado_thread* parametros_thread = {};
+
+    //Procedimentos para a criação do socket, seu binding e definição de modo em escuta.
+    estado_servidor.socket_servidor = socket(AF_INET, SOCK_STREAM, 0);
+    info_socket = {.sin_family = AF_INET, .sin_port = htons(PORTA), .sin_addr = INADDR_ANY};
+    bind(estado_servidor.socket_servidor, (struct sockaddr*)&info_socket, sizeof(info_socket));
+    listen(estado_servidor.socket_servidor, NUMERO_JOGADORES);
+
+    sem_init(&estado_servidor.semaforo_servidor, 0, 0);
+    estado_servidor.semaforos_jogadores.resize(NUMERO_JOGADORES);
+
+    for(int i = 0; i < NUMERO_JOGADORES; ++i)
+    {
+        int novo_socket;
+        novo_socket = accept(estado_servidor.socket_servidor, NULL, NULL);
+        if (novo_socket < 0)
+        {
+            if (!servidor_rodando.load())
+                break;
+
+            perror("accept");
+            continue;
+        }
+
+        estado_servidor.sockets_jogadores.push_back(novo_socket);
+        
+        pthread_t nova_thread;
+
+        sem_init(&estado_servidor.semaforos_jogadores[i], 0, 0);
+
+        parametros_thread = (Estado_thread*)malloc(sizeof(Estado_thread));
+        *parametros_thread = 
+        {
+            .numero_jogador   = (unsigned int)i+1,
+            .socket           = novo_socket,
+            .semaforo_jogador = &estado_servidor.semaforos_jogadores[i],
+            .acao             = (Acao_resposta*)parametros
+        };
+        
+        pthread_create(&nova_thread, NULL, main_jogador, parametros_thread);
+
+        estado_servidor.threads_jogadores.push_back(nova_thread);
+    }
+
+    return nullptr;
 }
 
 void* main_jogador(void* parametros)
 {
     Estado_thread parametros_thread = *(Estado_thread*)parametros;
 
-    sem_t semaforo = *(parametros_thread.semaforo_jogador), semaforo_servidor = *(parametros_thread.semaforo_servidor);
-    int indice_jogador = parametros_thread.indice_jogador;
+    sem_t* semaforo = parametros_thread.semaforo_jogador;
+    int numero_jogador = parametros_thread.numero_jogador;
     int socket_jogador = parametros_thread.socket;
     Acao_resposta *acao_tomada = parametros_thread.acao;
     Acao_resposta acao_convertida_buffer;
+
+    free((Estado_thread*)parametros);
     
     int tamanho_mensagem = 0;
     char buffer[MENSAGEM_CLIENTE];
@@ -123,127 +156,28 @@ void* main_jogador(void* parametros)
     while (servidor_rodando.load())
     {
         //A thread do jogador espera pela permissão da thread principal para executar.
-        sem_wait(&semaforo);
-
-        //É feita a leitura do socket até que o número esperado de bytes seja enviado. Eles vão sendo concatenados ao buffer conforme são recebidos.
-        while(tamanho_mensagem < MENSAGEM_CLIENTE)
-            tamanho_mensagem += recv(socket_jogador, buffer + tamanho_mensagem, MENSAGEM_CLIENTE - tamanho_mensagem, 0);
-
-        //Uso do mutex para garantir que não hajam condições de corrida na variável a ser modificada.
-        pthread_mutex_lock(&mutex_acao);
-
-        //Desserializa a mensagem enviada, de forma a ter a correspondência correta de bytes para informação.
-        desserializa_mensagem(buffer, acao_convertida_buffer);
-
-        //Atribuímos a mensagem recebida à variável de ação que será lida pela thread principal.
-        *acao_tomada = acao_convertida_buffer;
-
-        // cout << "Acao lida!\n";
-
-        // cout<< "Mutex trancado!\n";
-        
-        //Desbloqueia-se o mutex após as operações.
-        pthread_mutex_unlock(&mutex_acao);
-        // std::cout << "Condicao sinalizada e mutex liberado!\n";
-
-        //Sinaliza para a thread principal que todas as ações foram completas.
-        sem_post(&semaforo_servidor);
-
-    }
-
-    return nullptr;
-}
-
-void desserializa_mensagem(const char* buffer, Acao_resposta &acao)
-{
-    int offset = 0;
-
-    // Desserializa acao_escolhida
-    int tmp_int;
-    memcpy(&tmp_int, buffer + offset, sizeof(int));
-    acao.acao_escolhida = ntohl(tmp_int);
-    offset += sizeof(int);
-
-    // Desserializa valores_acao
-    for (int i = 0; i < 2; ++i) {
-        memcpy(&tmp_int, buffer + offset, sizeof(int));
-        acao.valores_acao[i] = ntohl(tmp_int);
-        offset += sizeof(int);
-    }
-
-    // Desserializa bool
-    acao.novo_valor = buffer[offset] != 0;
-}
-
-void* thread_debug_jogador(void* parametros)
-{
-    Estado_thread parametros_thread = *(Estado_thread*)parametros;
-
-    sem_t semaforo = *(parametros_thread.semaforo_jogador), semaforo_servidor = *(parametros_thread.semaforo_servidor);
-    int indice_jogador = parametros_thread.indice_jogador;
-    int socket_jogador = parametros_thread.socket;
-
-    int quantia, valor;
-    char acao;
-    char buffer[30];
-    Acao_resposta *acao_tomada = (Acao_resposta*)parametros;
-
-    while (servidor_rodando.load())
-    {
-        if(fgets(buffer, sizeof(buffer), stdin) == NULL)
-            break;
-        if(sscanf(buffer, "%c", &acao) != 1)
-            continue;
+        sem_wait(semaforo);
 
         pthread_mutex_lock(&mutex_acao);
 
-        // cout << "Acao lida!\n";
-
-        // cout<< "Mutex trancado!\n";
-
-        switch(acao)
-        {
-            case 'A':
-            {
-                if(sscanf(buffer, "%*c %dx%d", &quantia, &valor) == 2)
-                {
-                    *acao_tomada = {.acao_escolhida = AUMENTAR_APOSTA, .valores_acao = {quantia, valor}, .novo_valor = true};
-                    sem_post(&semaforo_acao);
-                }
-                // cout << "Acao tomada!\n";
-            }
-            break;
-
-            case 'D':
-            {
-                *acao_tomada = {.acao_escolhida = DUVIDAR, .valores_acao = NULL, .novo_valor = true};
-                sem_post(&semaforo_acao);
-            }
-            break;
-
-            case 'C':
-            {
-                *acao_tomada = {.acao_escolhida = CRAVAR, .valores_acao = NULL, .novo_valor = true};
-                sem_post(&semaforo_acao);
-            }
-            break;
-
-            default:
-            break;
-        }
         
-        pthread_mutex_unlock(&mutex_acao);
-        // std::cout << "Condicao sinalizada e mutex liberado!\n";
 
+        pthread_mutex_unlock(&mutex_acao);
+
+        sem_post(&estado_servidor.semaforo_servidor);
     }
 
+    close(socket_jogador);
     return nullptr;
-    
 }
 
 bool esperar_acao(Acao_resposta &acao_recebida, Estado &estado_jogo, sem_t &semaforo_servidor, sem_t &semaforo_jogador_atual, unsigned int jogador_atual)
 {
     bool acao_valida = false;
+    
+
+    //do while(acao_valida)
+
     
     //Sinaliza para a thread do jogador atual que essa pode executar.
     sem_post(&semaforo_jogador_atual);
@@ -271,7 +205,7 @@ bool esperar_acao(Acao_resposta &acao_recebida, Estado &estado_jogo, sem_t &sema
     return acao_valida;
 }
 
-int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int indice_jogador_atual)
+int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int numero_jogador_atual)
 {
     switch (acao.acao_escolhida)
     {
@@ -283,7 +217,7 @@ int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int indice_j
             if(!checa_aposta_valida(nova_aposta, estado_jogo))
                 return EXIT_FAILURE;
 
-            estado_jogo.set_aposta(nova_aposta, indice_jogador_atual);
+            estado_jogo.set_aposta(nova_aposta, numero_jogador_atual);
             estado_jogo.adiciona_jogada(Jogada(nova_aposta, acao.acao_escolhida));
         }
         break;
@@ -295,14 +229,14 @@ int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int indice_j
 
             if(checa_dados_mesa(estado_jogo) != MENOS)
             {
-                estado_jogo.tirar_dado_jogador(indice_jogador_atual);
-                std::cout << "tirando dado de: " << indice_jogador_atual+1 << std::endl;
+                estado_jogo.tirar_dado_jogador(numero_jogador_atual);
+                std::cout << "tirando dado de: " << numero_jogador_atual << std::endl;
             }
 
             else
             {
                 estado_jogo.tirar_dado_ultimo_jogador();
-                std::cout << "tirando dado de: " << estado_jogo._jogador_aposta_atual+1 << std::endl;
+                std::cout << "tirando dado de: " << estado_jogo.get_jogador_aposta_atual()+1 << std::endl;
             }
 
             estado_jogo.set_aposta(Aposta(), 0);
@@ -320,13 +254,13 @@ int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int indice_j
             
             if(checa_dados_mesa(estado_jogo) == EXATOS)
             {
-                for(unsigned int indice_jogador = 0; indice_jogador < estado_jogo.get_numero_jogadores(); ++indice_jogador)
-                    if(indice_jogador != indice_jogador_atual)
-                        estado_jogo.tirar_dado_jogador(indice_jogador);
+                for(unsigned int jogadores = 0; jogadores < estado_jogo.get_numero_jogadores(); jogadores++)
+                    if(estado_jogo.get_jogador(jogadores).get_numero() != numero_jogador_atual)
+                        estado_jogo.tirar_dado_jogador(jogadores);
             }
 
             else
-                estado_jogo.tirar_dado_jogador(indice_jogador_atual);
+                estado_jogo.tirar_dado_jogador(numero_jogador_atual);
             
             estado_jogo.set_aposta(Aposta(), 0);
             estado_jogo.aleatorizar_maos(LIMITE_FACE);
@@ -453,18 +387,83 @@ std::vector<unsigned int> gera_ordem_aleatoria(unsigned int tamanho)
 void envia_estado_mesa(const Estado &estado_jogo)
 {
     //A estruturação da mensagem de estado será feita
-    unsigned int tamanho_mensagem = 0;
-    unsigned int numero_dados_mesa = 0;
-    unsigned int rodada = 0;
+    Estado_mesa_msg estado_novo = {0};
+    unsigned int tamanho_mensagem = sizeof(estado_novo.rodada) + sizeof(estado_novo.n_dados_aposta) + sizeof(estado_novo.face_dados_aposta) + sizeof(estado_novo.jogador_atual);
+    bool sucesso_operacao = true;
 
+    estado_novo = 
+    {
+        .rodada = estado_jogo.get_turno_atual(),
+        .n_dados_aposta = estado_jogo.get_aposta().get_numero_dados(),
+        .face_dados_aposta = (unsigned int)estado_jogo.get_aposta().get_dados().get_valor(),
+        .jogador_atual = estado_jogo.get_jogador_turno_atual()
+    };
+
+    for(unsigned int i = 0; i < estado_servidor.sockets_jogadores.size(); ++i)
+    {
+        sucesso_operacao = enviar_mensagem(estado_servidor.sockets_jogadores[i], &estado_novo, tamanho_mensagem, Estado_mesa);
+
+        if(!sucesso_operacao)
+        {
+            // estado_servidor.
+        }
+    }
+
+
+    //TODO: TRATAR PARA DESCONEXOES!
+    if (!sucesso_operacao)
+    {
+        std::cout << "Erro ao enviar mensagem!\n";
+        sinalizar_desligamento(SIGINT);
+    }
+
+    return;
 
 }
 
 void envia_estado_inicial_mesa(const Estado &estado_jogo)
 {
+    Estado_inicial_msg estado_inicial = {.header = {}};
+    unsigned int tamanho_mensagem = 0, tamanho_mensagem_atual;
+    unsigned int numero_jogadores = estado_jogo.get_numero_jogadores();
+    unsigned int n_dados_jogador_atual = 0;
+    bool sucesso_operacao = true;
+
+    estado_inicial.numero_jogadores = numero_jogadores;
+    estado_inicial.dados_jogadores = (_dados_jogador*)malloc(numero_jogadores * sizeof(_dados_jogador));
+    tamanho_mensagem = sizeof(estado_inicial.numero_jogadores) + numero_jogadores*(sizeof(estado_inicial.dados_jogadores->n_dados) + sizeof(estado_inicial.dados_jogadores->numero_jogador)) + sizeof(estado_inicial.numero_jogador_atual);
+
+    for (unsigned int i = 0; i < numero_jogadores; ++i)
+    {
+        estado_inicial.dados_jogadores[i].numero_jogador = i+1;
+        estado_inicial.dados_jogadores[i].n_dados = estado_jogo.get_lista_jogadores()[i].get_mao().get_numero_dados();
+    }
+
     for (unsigned int i = 0; i < estado_servidor.sockets_jogadores.size(); ++i)
     {
+        tamanho_mensagem_atual = tamanho_mensagem;
+        estado_inicial.numero_jogador_atual = i+1;
+        n_dados_jogador_atual = estado_jogo.get_lista_jogadores()[i].get_mao().get_dados().size();
+        estado_inicial.valor_dados_jogador = (int*)malloc(n_dados_jogador_atual * sizeof(*estado_inicial.valor_dados_jogador));
+
+        for(unsigned int j = 0; j < n_dados_jogador_atual; ++j)
+            estado_inicial.valor_dados_jogador[j] = estado_jogo.get_lista_jogadores()[i].get_mao().get_dados()[j].get_valor();
+        
+        tamanho_mensagem_atual += n_dados_jogador_atual*sizeof(*estado_inicial.valor_dados_jogador);
+        
+        std::cout << tamanho_mensagem_atual << '\n';
+
         printf("Enviando...\n");
-        enviar_mensagem(estado_servidor.sockets_jogadores[i], NULL, 0, Heartbeat);
+        sucesso_operacao = enviar_mensagem(estado_servidor.sockets_jogadores[i], &estado_inicial, tamanho_mensagem_atual, Estado_inicial);
+        
+        free (estado_inicial.valor_dados_jogador);
+    }
+
+    free (estado_inicial.dados_jogadores);
+
+    if(!sucesso_operacao)
+    {
+        std::cout << "Erro ao enviar mensagem!\n";
+        sinalizar_desligamento(SIGINT);
     }
 }

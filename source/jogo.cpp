@@ -1,5 +1,6 @@
 #include <vector>
 #include <iostream>
+#include <algorithm>
 #include "jogo.h"
 
 Estado::Estado(unsigned int numero_jogadores, unsigned int tamanho_maos)
@@ -59,4 +60,24 @@ void Estado::aleatorizar_maos(unsigned int quantidade_lados)
 {
     for(unsigned int i = 0; i < this->_jogadores.size(); ++i)
         this->_jogadores[i].aleatorizar_mao(quantidade_lados);    
+}
+
+Jogador& Estado::get_jogador(unsigned int numero)
+{
+    auto compara_jogadores = [](const Jogador& primeiro, const Jogador& segundo) 
+    {
+        return primeiro.get_numero() < segundo.get_numero();
+    };
+
+    auto iterador = std::lower_bound(this->_jogadores.begin(), this->_jogadores.end(), numero, compara_jogadores);
+
+    return *iterador;
+}
+
+Mao::Mao(int* valores, unsigned int numero_dados)
+{
+    this->_dados.resize(numero_dados);
+
+    for(unsigned int i = 0; i < numero_dados; ++i)
+        this->_dados[i].set_valor(valores[i]);
 }
