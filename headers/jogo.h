@@ -154,6 +154,7 @@ class Estado
     void tirar_dado_jogador(unsigned int numero_jogador) {this->get_jogador(numero_jogador).perder_dado(); _quantia_dados--;}
     void tirar_dado_ultimo_jogador() {this->tirar_dado_jogador(_jogador_aposta_atual);}
     void resetar_ultimas_jogadas() {this->_buffer_jogadas.clear();}
+    void remover_jogador(unsigned int indice) {this->_jogadores.erase(this->_jogadores.begin() + indice);}
 
     //Getters
     const unsigned int get_turno_atual() const {return _turno_atual;}

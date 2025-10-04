@@ -5,13 +5,14 @@
 #include <semaphore.h>
 #include <atomic>
 #include <vector>
+#include <memory>
 #include "jogo.h"
 
 #define TAMANHO_MAOS 3
-#define NUMERO_JOGADORES 1
+#define NUMERO_JOGADORES 4
 #define LIMITE_FACE 6
 #define MENSAGEM_CLIENTE sizeof(Acao_resposta)
-#define PORTA 4872
+#define PORTA 4621
 
 typedef struct _estrutura_acoes
 {
@@ -23,10 +24,11 @@ typedef struct _estrutura_acoes
 
 typedef struct __jogador_cliente
 {
-    Jogador instancia;
     pthread_t thread;
     sem_t semaforo;
     int socket;
+    unsigned int numero;
+    bool conectado;
 } Jogador_cliente;
 
 typedef struct _estado_global
@@ -34,10 +36,7 @@ typedef struct _estado_global
     pthread_t thread_socket;
     sem_t semaforo_servidor;
     int socket_servidor;
-    std::vector<pthread_t> threads_jogadores;
-    std::vector<int> sockets_jogadores;
-    std::vector<sem_t> semaforos_jogadores;
-
+    std::vector <std::unique_ptr<Jogador_cliente>> jogadores;
 } Estado_global;
 
 typedef struct _estado_thread
@@ -46,6 +45,7 @@ typedef struct _estado_thread
     int socket;
     sem_t* semaforo_jogador;
     Acao_resposta* acao;
+    bool* ligada;
 
 } Estado_thread;
 
@@ -94,5 +94,8 @@ bool checa_aposta_valida(const Aposta &nova_aposta, const Estado &estado_jogo);
 int checa_dados_mesa(const Estado &estado_jogo);
 void envia_estado_inicial_mesa(const Estado &estado_jogo);
 void envia_estado_mesa(const Estado &estado_jogo);
+bool checa_conexoes(Estado &estado_jogo, unsigned int jogador_atual);
+void desligar_jogador_cliente(unsigned int indice);
+
 
 #endif //_server_h

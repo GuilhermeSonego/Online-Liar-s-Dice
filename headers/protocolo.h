@@ -7,6 +7,7 @@ enum Tipos_Mensagem
     Heartbeat,
     Estado_inicial,
     Estado_mesa,
+    Desconexao,
     Aumento_aposta,
     Duvida,
     Cravada
@@ -44,6 +45,13 @@ struct Estado_mesa_msg
     unsigned int n_dados_aposta;
     unsigned int face_dados_aposta;
     unsigned int jogador_atual;
+};
+
+struct Desconexao_msg
+{
+    Header_protocolo header;
+    unsigned int quantia_desconectados;
+    unsigned int* numero_jogadores;
 };
 
 struct Aposta_msg

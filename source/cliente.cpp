@@ -154,6 +154,27 @@ void* thread_listener(void* parametros)
             }
             break;
 
+            case Desconexao:
+            {
+                Desconexao_msg* lista_desconectados = (Desconexao_msg*)mensagem_recebida.conteudo_mensagem;
+
+                std::cout << "houve desconexoes!\n";
+
+                std::cout << "NUMERO DESCONECTADOS: " << lista_desconectados->quantia_desconectados << '\n';
+
+                std::cout << "NUMERO DO DESCONECTADO: " << lista_desconectados->numero_jogadores[0] << '\n';
+                for(unsigned int i = 0; i < estado_atualizado->adversarios.size(); ++i)
+                    for(unsigned int j = 0; j < lista_desconectados->quantia_desconectados; ++j)
+                        if(estado_atualizado->adversarios[i].numero == lista_desconectados->numero_jogadores[j])
+                        {
+                            estado_atualizado->adversarios[i].conectado = false;  
+                            estado_atualizado->n_dados_total -= estado_atualizado->adversarios[i].n_dados;
+                        }
+                
+                nova_acao.store(true);
+            }
+            break;
+
             default:
             break;
         }

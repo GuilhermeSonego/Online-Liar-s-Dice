@@ -60,6 +60,19 @@ bool enviar_mensagem(int socket_destino, const void *informacoes, unsigned int t
         }
         break;
 
+        case Desconexao:
+        {
+            Desconexao_msg* buffer_entrada = (Desconexao_msg*)informacoes;
+
+            escreve_cabecalho(itera_buffer, header);
+
+            escreve_serializado(itera_buffer, buffer_entrada->quantia_desconectados);
+
+            for(unsigned int i = 0; i < buffer_entrada->quantia_desconectados; ++i)
+                escreve_serializado(itera_buffer, buffer_entrada->numero_jogadores[i]);
+        }
+        break;
+
         case Aumento_aposta:
         {
             Aposta_msg* buffer_entrada = (Aposta_msg*)informacoes;
@@ -186,6 +199,30 @@ Mensagem receber_mensagem(int socket_destino)
         }
         break;
 
+        case Desconexao:
+        {
+            Desconexao_msg* estrutura_mensagem = (Desconexao_msg*)malloc(sizeof(Desconexao_msg));
+
+            sucesso_leitura = le_para_buffer(socket_destino, buffer_conteudo_mensagem, header_mensagem.tamanho_mensagem);
+
+            if(!sucesso_leitura)
+            {
+                mensagem_recebida.tipo_mensagem = Falha;
+                break;
+            }
+
+            escreve_desserializado(&estrutura_mensagem->quantia_desconectados, itera_buffer, sizeof(estrutura_mensagem->quantia_desconectados));
+
+            if(estrutura_mensagem->quantia_desconectados != 0)
+                estrutura_mensagem->numero_jogadores = (unsigned int*)malloc(sizeof(*estrutura_mensagem->numero_jogadores)*estrutura_mensagem->quantia_desconectados);
+
+            for(unsigned int i = 0; i < estrutura_mensagem->quantia_desconectados; ++i)
+                escreve_desserializado(&estrutura_mensagem->numero_jogadores[i], itera_buffer, sizeof(*estrutura_mensagem->numero_jogadores));
+            
+            mensagem_recebida.conteudo_mensagem = estrutura_mensagem;
+        }
+        break;
+
         case Aumento_aposta:
         {
             Aposta_msg* estrutura_mensagem = (Aposta_msg*)malloc(sizeof(Estado_mesa_msg));
@@ -277,13 +314,16 @@ bool send_completo(int socket, const void *buffer, unsigned int tamanho)
 {
     unsigned int total = 0;
     const char *itera_buffer = (const char*)buffer;
-    unsigned int enviados;
+    int enviados;
 
     while (total < tamanho) 
     {
         enviados = send(socket, itera_buffer + total, tamanho - total, MSG_NOSIGNAL);
         if (enviados <= 0)
+        {   
+            std::cout << "Deu erro!!!!!!!!!!\n";
             return false;
+        }
 
         total += enviados;
     }
@@ -310,6 +350,15 @@ void free_mensagem(Mensagem mensagem_usada)
             Estado_mesa_msg* ponteiro_estado_mesa = (Estado_mesa_msg*)mensagem_usada.conteudo_mensagem;
 
             free(ponteiro_estado_mesa);
+        }
+        break;
+
+        case Desconexao:
+        {
+            Desconexao_msg* ponteiro_desconexao = (Desconexao_msg*)mensagem_usada.conteudo_mensagem;
+
+            free(ponteiro_desconexao->numero_jogadores);
+            free(ponteiro_desconexao);
         }
         break;
 
