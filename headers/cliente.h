@@ -9,6 +9,7 @@ typedef struct _jogadores_adversarios
     unsigned int numero;
     unsigned int n_dados;
     bool conectado;
+    std::vector<int> valor_dados;
 
 } Jogadores_adversarios;
 
@@ -29,6 +30,8 @@ typedef struct _estado_cliente
 int socket_servidor;
 std::atomic<bool> conectado_ao_servidor(true);
 std::atomic<bool> nova_acao(false);
+std::atomic<bool> revela_mesa(false);
+unsigned int vencedor_ultima_rodada;
 pthread_t listener_thread, talker_thread;
 sem_t conexao;
 pthread_mutex_t mutex_estado = PTHREAD_MUTEX_INITIALIZER;
@@ -40,5 +43,6 @@ void* thread_talker(void* parametros);
 void desbloqueia_teclado(bool ativar);
 
 void print_estado(const Estado_cliente& estado);
+void print_adversarios_detalhado(const Estado_cliente& estado);
 
 #endif //__cliente_h

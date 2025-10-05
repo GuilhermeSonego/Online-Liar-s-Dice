@@ -31,7 +31,6 @@ bool enviar_mensagem(int socket_destino, const void *informacoes, unsigned int t
 
             escreve_serializado(itera_buffer, buffer_entrada->numero_jogadores);
             escreve_serializado(itera_buffer, buffer_entrada->numero_jogador_atual);
-
             
             for(unsigned int i = 0; i < buffer_entrada->numero_jogadores; ++i)
             {
@@ -96,11 +95,29 @@ bool enviar_mensagem(int socket_destino, const void *informacoes, unsigned int t
         }
         break;
 
+        case Revela_mesa:
+        {
+            Revela_mesa_msg* buffer_entrada = (Revela_mesa_msg*)informacoes;
+
+            escreve_cabecalho(itera_buffer, header);
+
+            escreve_serializado(itera_buffer, buffer_entrada->numero_jogadores);
+            escreve_serializado(itera_buffer, buffer_entrada->numero_jogador_vencedor);
+
+            for(unsigned int i = 0; i < buffer_entrada->numero_jogadores; ++i)
+            {
+                escreve_serializado(itera_buffer, buffer_entrada->jogadores[i].numero_jogador);
+                escreve_serializado(itera_buffer, buffer_entrada->jogadores[i].n_dados);
+                for(unsigned j = 0; j < buffer_entrada->jogadores[i].n_dados; ++j)
+                    escreve_serializado(itera_buffer, buffer_entrada->jogadores[i].valor_dados[j]);
+            }
+        }
+        break;
+
         default:
         break;
     }
 
-    std::cout << "Enviados: " << tamanho_total_buffer << "bytes\n";
     sucesso_escrita = send_completo(socket_destino, buffer_saida, tamanho_total_buffer);
     free(buffer_saida);
 
@@ -254,6 +271,38 @@ Mensagem receber_mensagem(int socket_destino)
         }
         break;
 
+        case Revela_mesa:
+        {
+            Revela_mesa_msg* estrutura_recebida = (Revela_mesa_msg*)malloc(sizeof(Revela_mesa_msg));
+
+            sucesso_leitura = le_para_buffer(socket_destino, buffer_conteudo_mensagem, header_mensagem.tamanho_mensagem);
+
+            if(!sucesso_leitura)
+            {   
+                mensagem_recebida.tipo_mensagem = Falha;
+                break;
+            }
+
+            escreve_desserializado(&estrutura_recebida->numero_jogadores, itera_buffer, sizeof(estrutura_recebida->numero_jogadores));
+            escreve_desserializado(&estrutura_recebida->numero_jogador_vencedor, itera_buffer, sizeof(estrutura_recebida->numero_jogador_vencedor));
+
+            estrutura_recebida->jogadores = (_dados_revelados_jogador*)malloc(estrutura_recebida->numero_jogadores * sizeof(_dados_revelados_jogador));
+
+            for(unsigned int i = 0; i < estrutura_recebida->numero_jogadores; ++i)
+            {
+                escreve_desserializado(&estrutura_recebida->jogadores[i].numero_jogador, itera_buffer, sizeof(estrutura_recebida->jogadores->numero_jogador));
+                escreve_desserializado(&estrutura_recebida->jogadores[i].n_dados, itera_buffer, sizeof(estrutura_recebida->jogadores->n_dados));
+
+                estrutura_recebida->jogadores[i].valor_dados = (int*)malloc(estrutura_recebida->jogadores[i].n_dados * sizeof(*estrutura_recebida->jogadores->valor_dados));
+
+                for(unsigned j = 0; j < estrutura_recebida->jogadores[i].n_dados; ++j)
+                    escreve_desserializado(&estrutura_recebida->jogadores[i].valor_dados[j], itera_buffer, sizeof(*estrutura_recebida->jogadores->valor_dados));
+            }
+            
+            mensagem_recebida.conteudo_mensagem = estrutura_recebida;
+        }
+        break;
+
         default:
         break;
     }
@@ -321,7 +370,7 @@ bool send_completo(int socket, const void *buffer, unsigned int tamanho)
         enviados = send(socket, itera_buffer + total, tamanho - total, MSG_NOSIGNAL);
         if (enviados <= 0)
         {   
-            std::cout << "Deu erro!!!!!!!!!!\n";
+            std::cout << "Erro ao enviar mensagem!\n";
             return false;
         }
 
@@ -367,6 +416,19 @@ void free_mensagem(Mensagem mensagem_usada)
             Aposta_msg* ponteiro_aposta = (Aposta_msg*)mensagem_usada.conteudo_mensagem;
 
             free(ponteiro_aposta);
+        }
+        break;
+
+        case Revela_mesa:
+        {
+            Revela_mesa_msg* ponteiro_revela_mesa = (Revela_mesa_msg*)mensagem_usada.conteudo_mensagem;
+
+            for(unsigned int i = 0; i < ponteiro_revela_mesa->numero_jogadores; ++i)
+                free(ponteiro_revela_mesa->jogadores[i].valor_dados);
+
+            free(ponteiro_revela_mesa->jogadores);
+            free(ponteiro_revela_mesa);
+            
         }
         break;
 

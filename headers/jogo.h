@@ -140,7 +140,7 @@ class Jogada
 class Estado
 {
     private:
-    unsigned int _tamanho_maos, _turno_atual, _quantia_dados, _jogador_aposta_atual, _jogador_turno_atual;
+    unsigned int _tamanho_maos, _turno_atual, _jogador_aposta_atual, _jogador_turno_atual;
     std::vector<Jogador> _jogadores;
     std::vector<Jogada> _jogadas, _buffer_jogadas;
     Aposta _aposta_atual;
@@ -151,10 +151,10 @@ class Estado
 
     //Métodos
     void aleatorizar_maos(unsigned int quantidade_lados);
-    void tirar_dado_jogador(unsigned int numero_jogador) {this->get_jogador(numero_jogador).perder_dado(); _quantia_dados--;}
+    void tirar_dado_jogador(unsigned int numero_jogador) {this->get_jogador(numero_jogador).perder_dado();}
     void tirar_dado_ultimo_jogador() {this->tirar_dado_jogador(_jogador_aposta_atual);}
     void resetar_ultimas_jogadas() {this->_buffer_jogadas.clear();}
-    void remover_jogador(unsigned int indice) {this->_jogadores.erase(this->_jogadores.begin() + indice);}
+    void remover_jogador(unsigned int numero);
 
     //Getters
     const unsigned int get_turno_atual() const {return _turno_atual;}
@@ -168,7 +168,7 @@ class Estado
     const std::vector<Jogada>& get_lista_jogadas() const {return _jogadas;}
     const std::vector<Jogada>& get_ultimas_jogadas() const {return _buffer_jogadas;}
     const std::vector<Jogador>& get_lista_jogadores() const {return _jogadores;}
-    const unsigned int get_dados_mesa() const {return _quantia_dados;}
+    const unsigned int get_dados_mesa() const;
 
     //Setters
     void set_turno_atual(unsigned int novo_valor) {this->_turno_atual = novo_valor;}

@@ -7,7 +7,6 @@ Estado::Estado(unsigned int numero_jogadores, unsigned int tamanho_maos)
 {
     this-> _tamanho_maos = tamanho_maos;
     this->_turno_atual = 0;
-    this->_quantia_dados = numero_jogadores * tamanho_maos;
     this->_jogador_aposta_atual = 0;
     this->_aposta_atual = Aposta();
 
@@ -29,7 +28,7 @@ void Estado::print_tudo() const
     std::cout << "Jogadores: " << _jogadores.size()
     << " | Tamanho mãos: " << _tamanho_maos
     << " | Turno atual: " << _turno_atual
-    << " | Dados restantes: " << _quantia_dados;
+    << " | Dados restantes: " << this->get_dados_mesa();
     for(unsigned int j = 0; j < _jogadores.size(); ++j)
     {
         std::cout << "| Mao " << j+1 << ": ";
@@ -74,10 +73,39 @@ Jogador& Estado::get_jogador(unsigned int numero)
     return *iterador;
 }
 
+const Jogador& Estado::get_jogador(unsigned int numero) const
+{
+    auto compara_jogadores = [](const Jogador& primeiro, const unsigned int& valor) 
+    {
+        return primeiro.get_numero() < valor;
+    };
+
+    auto iterador = std::lower_bound(this->_jogadores.begin(), this->_jogadores.end(), numero, compara_jogadores);
+
+    return *iterador;
+}
+
 Mao::Mao(int* valores, unsigned int numero_dados)
 {
     this->_dados.resize(numero_dados);
 
     for(unsigned int i = 0; i < numero_dados; ++i)
         this->_dados[i].set_valor(valores[i]);
+}
+
+const unsigned int Estado::get_dados_mesa() const
+{
+    unsigned int quantia = 0;
+
+    for(unsigned int i = 0; i < this->get_numero_jogadores(); ++i)
+        quantia += this->_jogadores[i].get_mao().get_numero_dados();
+    
+    return quantia;
+}
+
+void Estado::remover_jogador(unsigned int numero)
+{
+    for(unsigned int i = 0; i < this->_jogadores.size(); ++i)
+        if(this->_jogadores[i].get_numero() == numero)
+            this->_jogadores.erase(this->_jogadores.begin() + i);
 }

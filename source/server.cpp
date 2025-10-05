@@ -1,5 +1,6 @@
 #include "jogo.h"
 #include "server.h"
+#include "protocolo.h"
 #include <stdlib.h>
 #include <random>
 #include <iostream>
@@ -10,16 +11,17 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <string.h>
-#include "protocolo.h"
+#include <poll.h>
 
 int main()
 {
     Estado estado_jogo(NUMERO_JOGADORES, TAMANHO_MAOS);
-    std::vector<unsigned int> ordem_turnos;
-    unsigned int jogador_atual = 0;
-    Acao_resposta acao_recebida = {.acao_escolhida = 0, .valores_acao = NULL, .novo_valor = false};
-    bool acao_valida = false;
-    bool jogador_atual_desconectado = false;
+    Jogador_cliente* jogador_cliente_atual;
+    unsigned int numero_jogador_atual = 0;
+    unsigned int turno_jogador = 0;
+    Acao_resposta acao_recebida = {.acao_escolhida = NADA, .valores_acao = {0}};
+    bool rodada_concluida = true;
+    bool houve_desconexoes = false;
 
     //Definição de uma função responsável pelo desligamento do programa pela evocação do CTRL + C.
     signal(SIGINT, sinalizar_desligamento);
@@ -32,40 +34,60 @@ int main()
     pthread_join(estado_servidor.thread_socket, nullptr);
 
     estado_jogo.aleatorizar_maos(LIMITE_FACE);        
-    ordem_turnos = gera_ordem_aleatoria(NUMERO_JOGADORES);
 
-    envia_estado_inicial_mesa(estado_jogo);
+    gera_ordem_aleatoria();
 
     while (servidor_rodando.load())
     {
-        estado_jogo++;
+        if(rodada_concluida)
+        {
+            envia_estado_inicial_mesa(estado_jogo);
 
-        jogador_atual = ordem_turnos[estado_jogo.get_turno_atual() % estado_jogo.get_numero_jogadores()];
-        jogador_atual = estado_jogo.get_lista_jogadores()[jogador_atual].get_numero();
-        estado_jogo.set_jogador_turno_atual(jogador_atual);
+            numero_jogador_atual = estado_servidor.jogadores[turno_jogador % estado_servidor.jogadores.size()]->numero;
+            while(estado_jogo.get_jogador(numero_jogador_atual).get_mao().get_numero_dados() == 0)
+                numero_jogador_atual = estado_servidor.jogadores[++turno_jogador % estado_servidor.jogadores.size()]->numero;
 
-        envia_estado_mesa(estado_jogo);
+            estado_jogo.set_jogador_turno_atual(numero_jogador_atual);
+            estado_jogo++;
+            jogador_cliente_atual = busca_jogador(numero_jogador_atual);
+        }
 
-        jogador_atual_desconectado = checa_conexoes(estado_jogo, jogador_atual);
+        houve_desconexoes = checa_conexoes(estado_jogo, numero_jogador_atual);
 
-        if(jogador_atual_desconectado)
+        if(houve_desconexoes)
+        {
+            rodada_concluida = true;
             continue;
+        }
 
-        sleep(10);
-        // std::cout << "Esperando jogada...\n";
-        // std::cout << "Jogador atual: " << jogador_atual << std::endl;
-        // std::cout << "Aposta atual: " << estado_jogo.get_aposta().get_numero_dados() << " | " << estado_jogo.get_aposta().get_dados().get_valor() << '\n';
+        if(rodada_concluida)
+        {
+            envia_estado_mesa(estado_jogo);
+            rodada_concluida = false;
+        }
 
-        // while(!acao_valida)
-            // acao_valida = esperar_acao(acao_recebida, estado_jogo, semaforo_servidor, semaforos_jogadores[jogador_atual-1], jogador_atual);
-        
-        acao_valida = false;
-        
-        // estado_jogo.print_tudo();
+        std::cout << "Esperando jogada...\n";
+        std::cout << "Jogador atual: " << numero_jogador_atual << std::endl;
+        std::cout << "Aposta atual: " << estado_jogo.get_aposta().get_numero_dados() << " | " << estado_jogo.get_aposta().get_dados().get_valor() << '\n';
+
+        estado_jogo.print_tudo();
+
+        rodada_concluida = esperar_acao(acao_recebida, estado_jogo, jogador_cliente_atual);
+
+        if(rodada_concluida)
+            executar_acao(acao_recebida, estado_jogo, numero_jogador_atual, turno_jogador);
+               
+        if(estado_jogo.get_numero_jogadores() <= 1)
+        {
+            std::cout << "Fim de jogo!\n";
+            break;
+        }
     }
     
     sinalizar_desligamento(SIGINT);
     cleanup_servidor();
+
+    return 0;
 }
 
 void cleanup_servidor()
@@ -75,9 +97,6 @@ void cleanup_servidor()
         pthread_join(estado_servidor.jogadores[i]->thread, nullptr);
     
     close(estado_servidor.socket_servidor);
-    
-    //Enfim finaliza o programa.
-    exit(0);
 }
 
 void sinalizar_desligamento(int sinal)
@@ -152,16 +171,14 @@ void* main_jogador(void* parametros)
     Estado_thread parametros_thread = *(Estado_thread*)parametros;
 
     sem_t* semaforo = parametros_thread.semaforo_jogador;
-    int numero_jogador = parametros_thread.numero_jogador;
     int socket_jogador = parametros_thread.socket;
     Acao_resposta *acao_tomada = parametros_thread.acao;
-    Acao_resposta acao_convertida_buffer;
     bool* ligada = parametros_thread.ligada;
+    struct pollfd evento = {.fd = socket_jogador, .events = POLLIN, .revents = 0};
+    int retorno_evento;
+    Mensagem mensagem_recebida;
 
     free((Estado_thread*)parametros);
-    
-    int tamanho_mensagem = 0;
-    char buffer[MENSAGEM_CLIENTE];
 
     *ligada = true;
 
@@ -170,46 +187,90 @@ void* main_jogador(void* parametros)
         //A thread do jogador espera pela permissão da thread principal para executar.
         sem_wait(semaforo);
 
-        pthread_mutex_lock(&mutex_acao);
+        retorno_evento = poll(&evento, 1, 3000);
 
+        if(retorno_evento <= 0)
+            mensagem_recebida.tipo_mensagem = Falha;
         
+        if(evento.revents & POLLIN)
+            mensagem_recebida = receber_mensagem(socket_jogador);
 
-        pthread_mutex_unlock(&mutex_acao);
+        switch(mensagem_recebida.tipo_mensagem)
+        {
+            case Aumento_aposta:
+            {
+                Aposta_msg *novos_valores_aposta = (Aposta_msg*)mensagem_recebida.conteudo_mensagem;
+                pthread_mutex_lock(&mutex_acao);
 
+                *acao_tomada = {.acao_escolhida = AUMENTAR_APOSTA, .valores_acao = {novos_valores_aposta->n_dados_aposta, novos_valores_aposta->face_dados_aposta}}; 
+
+                pthread_mutex_unlock(&mutex_acao);
+            }
+            break;
+
+            case Duvida:
+            {
+                pthread_mutex_lock(&mutex_acao);
+
+                *acao_tomada = {.acao_escolhida = DUVIDAR, .valores_acao = {0}}; 
+
+                pthread_mutex_unlock(&mutex_acao);
+            }
+            break;
+
+            case Cravada:
+            {
+                pthread_mutex_lock(&mutex_acao);
+
+                *acao_tomada = {.acao_escolhida = CRAVAR, .valores_acao = {0}}; 
+
+                pthread_mutex_unlock(&mutex_acao);
+            }
+            break;
+
+            case Falha:
+            {
+                pthread_mutex_lock(&mutex_acao);
+
+                *acao_tomada = {.acao_escolhida = NADA, .valores_acao = {0}}; 
+
+                pthread_mutex_unlock(&mutex_acao); 
+            }
+            break;
+
+            default:
+            {
+                pthread_mutex_lock(&mutex_acao);
+
+                *acao_tomada = {.acao_escolhida = NADA, .valores_acao = {0}}; 
+
+                pthread_mutex_unlock(&mutex_acao); 
+            }
+            break;
+        }
+
+        free_mensagem(mensagem_recebida);
         sem_post(&estado_servidor.semaforo_servidor);
     }
 
-    close(socket_jogador);
     return nullptr;
 }
 
-bool esperar_acao(Acao_resposta &acao_recebida, Estado &estado_jogo, sem_t &semaforo_servidor, sem_t &semaforo_jogador_atual, unsigned int jogador_atual)
+bool esperar_acao(Acao_resposta &acao_recebida, Estado &estado_jogo, Jogador_cliente* jogador_atual)
 {
     bool acao_valida = false;
-    
 
-    //do while(acao_valida)
-
-    
     //Sinaliza para a thread do jogador atual que essa pode executar.
-    sem_post(&semaforo_jogador_atual);
+    sem_post(&jogador_atual->semaforo);
 
     //Espera pelo término da execução da thread do jogador.
-    sem_wait(&semaforo_servidor);
-
-    // cout << "entrando...\n";
+    sem_wait(&estado_servidor.semaforo_servidor);
 
     //Tranca o mutex para evitar condições de corrida.
     pthread_mutex_lock(&mutex_acao);
 
-    // cout << "Esperando mutex...\n";
-    
-    // cout << "Liberado!!!\n";
-
-    //Executa a ação enviada pelo jogador.
-    acao_valida = !executar_acao(acao_recebida, estado_jogo, jogador_atual);
-
-    // cout << "Acao executada!!!\n";
+    //Checagem se a ação enviada é válida.
+    acao_valida = checa_acao_valida(acao_recebida, estado_jogo);
 
     //Destranca o mutex após as operações.
     pthread_mutex_unlock(&mutex_acao);
@@ -217,7 +278,7 @@ bool esperar_acao(Acao_resposta &acao_recebida, Estado &estado_jogo, sem_t &sema
     return acao_valida;
 }
 
-int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int numero_jogador_atual)
+unsigned int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int numero_jogador_atual, unsigned int &turno_jogador)
 {
     switch (acao.acao_escolhida)
     {
@@ -226,9 +287,7 @@ int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int numero_j
             int quantia = acao.valores_acao[0], valor = acao.valores_acao[1];
             Aposta nova_aposta(quantia, valor);
 
-            if(!checa_aposta_valida(nova_aposta, estado_jogo))
-                return EXIT_FAILURE;
-
+            turno_jogador++;
             estado_jogo.set_aposta(nova_aposta, numero_jogador_atual);
             estado_jogo.adiciona_jogada(Jogada(nova_aposta, acao.acao_escolhida));
         }
@@ -236,52 +295,158 @@ int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int numero_j
 
         case DUVIDAR:
         {
-            if (estado_jogo.get_aposta() == Aposta())
-                return EXIT_FAILURE;
+
+            Revela_mesa_msg dados_mesa;
+            unsigned int n_dados_jogador;
+            unsigned int tamanho_mensagem = sizeof(dados_mesa.numero_jogadores) + sizeof(dados_mesa.numero_jogador_vencedor);
+
+            dados_mesa.numero_jogadores = estado_jogo.get_numero_jogadores();
+            dados_mesa.jogadores = (_dados_revelados_jogador*)malloc(dados_mesa.numero_jogadores*sizeof(*dados_mesa.jogadores));
+
+            tamanho_mensagem += dados_mesa.numero_jogadores*(sizeof(dados_mesa.jogadores->numero_jogador) + sizeof(dados_mesa.jogadores->n_dados));
+
+            for(unsigned int i = 0; i < dados_mesa.numero_jogadores; ++i)
+            {   
+                dados_mesa.jogadores[i].numero_jogador = estado_jogo.get_lista_jogadores()[i].get_numero();
+                n_dados_jogador = estado_jogo.get_lista_jogadores()[i].get_mao().get_numero_dados();
+                dados_mesa.jogadores[i].n_dados = n_dados_jogador;
+                dados_mesa.jogadores[i].valor_dados = (int*)malloc(n_dados_jogador*sizeof(*dados_mesa.jogadores->valor_dados));
+                tamanho_mensagem += n_dados_jogador*sizeof(*dados_mesa.jogadores->valor_dados);
+
+                for(unsigned j = 0; j < n_dados_jogador; ++j)
+                    dados_mesa.jogadores[i].valor_dados[j] = estado_jogo.get_lista_jogadores()[i].get_mao().get_dados()[j].get_valor();   
+            }
 
             if(checa_dados_mesa(estado_jogo) != MENOS)
             {
                 estado_jogo.tirar_dado_jogador(numero_jogador_atual);
-                std::cout << "tirando dado de: " << numero_jogador_atual << std::endl;
+                dados_mesa.numero_jogador_vencedor = estado_jogo.get_jogador_aposta_atual();
+                turno_jogador--;
             }
 
             else
             {
                 estado_jogo.tirar_dado_ultimo_jogador();
-                std::cout << "tirando dado de: " << estado_jogo.get_jogador_aposta_atual()+1 << std::endl;
+                dados_mesa.numero_jogador_vencedor = numero_jogador_atual;
             }
+
+            for(unsigned int i = 0; i < estado_servidor.jogadores.size(); ++i)
+                enviar_mensagem(estado_servidor.jogadores[i]->socket, &dados_mesa, tamanho_mensagem, Revela_mesa);
+        
+            for(unsigned int i = 0; i < dados_mesa.numero_jogadores; ++i)
+                free(dados_mesa.jogadores[i].valor_dados);
+            
+            free(dados_mesa.jogadores);
+
+            sleep(3);
 
             estado_jogo.set_aposta(Aposta(), 0);
             estado_jogo.aleatorizar_maos(LIMITE_FACE);
             estado_jogo.resetar_ultimas_jogadas();
+        }
+        break;
 
-            //enviar dados da mesa
+        case CRAVAR:
+        {
+            Revela_mesa_msg dados_mesa;
+            unsigned int n_dados_jogador;
+            unsigned int tamanho_mensagem = sizeof(dados_mesa.numero_jogadores) + sizeof(dados_mesa.numero_jogador_vencedor);
+
+            dados_mesa.numero_jogadores = estado_jogo.get_numero_jogadores();
+            dados_mesa.jogadores = (_dados_revelados_jogador*)malloc(dados_mesa.numero_jogadores*sizeof(*dados_mesa.jogadores));
+
+            tamanho_mensagem += dados_mesa.numero_jogadores*(sizeof(dados_mesa.jogadores->numero_jogador) + sizeof(dados_mesa.jogadores->n_dados));
+
+            for(unsigned int i = 0; i < dados_mesa.numero_jogadores; ++i)
+            {   
+                dados_mesa.jogadores[i].numero_jogador = estado_jogo.get_lista_jogadores()[i].get_numero();
+                n_dados_jogador = estado_jogo.get_lista_jogadores()[i].get_mao().get_numero_dados();
+                dados_mesa.jogadores[i].n_dados = n_dados_jogador;
+                dados_mesa.jogadores[i].valor_dados = (int*)malloc(n_dados_jogador*sizeof(*dados_mesa.jogadores->valor_dados));
+                tamanho_mensagem += n_dados_jogador*sizeof(*dados_mesa.jogadores->valor_dados);
+
+                for(unsigned j = 0; j < n_dados_jogador; ++j)
+                    dados_mesa.jogadores[i].valor_dados[j] = estado_jogo.get_lista_jogadores()[i].get_mao().get_dados()[j].get_valor();  
+            }
+               
+            if(checa_dados_mesa(estado_jogo) == EXATOS)
+            {
+                for(unsigned int jogadores = 0; jogadores < estado_jogo.get_numero_jogadores(); jogadores++)
+                {
+                    if(estado_jogo.get_lista_jogadores()[jogadores].get_numero() != numero_jogador_atual)
+                        estado_jogo.tirar_dado_jogador(estado_jogo.get_lista_jogadores()[jogadores].get_numero());
+                }
+
+                dados_mesa.numero_jogador_vencedor = numero_jogador_atual;
+            }
+
+            else
+            {
+                turno_jogador--;
+                estado_jogo.tirar_dado_jogador(numero_jogador_atual);
+                dados_mesa.numero_jogador_vencedor = estado_jogo.get_jogador_aposta_atual();
+            }
+
+            for(unsigned int i = 0; i < estado_servidor.jogadores.size(); ++i)
+                enviar_mensagem(estado_servidor.jogadores[i]->socket, &dados_mesa, tamanho_mensagem, Revela_mesa);
+        
+            for(unsigned int i = 0; i < dados_mesa.numero_jogadores; ++i)
+                free(dados_mesa.jogadores[i].valor_dados);
+        
+            free(dados_mesa.jogadores);
+            
+            sleep(3);
+            
+            estado_jogo.set_aposta(Aposta(), 0);
+            estado_jogo.aleatorizar_maos(LIMITE_FACE);
+            estado_jogo.resetar_ultimas_jogadas();
+        }
+        break;
+
+        default:
+        break;
+    }
+
+    return 0;
+}
+
+bool checa_acao_valida(Acao_resposta& acao,const Estado &estado_jogo)
+{
+    switch(acao.acao_escolhida)
+    {
+        case AUMENTAR_APOSTA:
+        {
+            int quantia = acao.valores_acao[0], valor = acao.valores_acao[1];
+            Aposta nova_aposta(quantia, valor);
+
+            if(checa_aposta_valida(nova_aposta, estado_jogo))
+                return true;
+        }
+        break;
+
+        case DUVIDAR:
+        {
+            if (estado_jogo.get_aposta() == Aposta())
+                return false;
+            
+            return true;
         }
         break;
 
         case CRAVAR:
         {
             if (estado_jogo.get_aposta() == Aposta())
-                return EXIT_FAILURE;
+                return false;
             
-            if(checa_dados_mesa(estado_jogo) == EXATOS)
-            {
-                for(unsigned int jogadores = 0; jogadores < estado_jogo.get_numero_jogadores(); jogadores++)
-                    if(estado_jogo.get_jogador(jogadores).get_numero() != numero_jogador_atual)
-                        estado_jogo.tirar_dado_jogador(jogadores);
-            }
-
-            else
-                estado_jogo.tirar_dado_jogador(numero_jogador_atual);
-            
-            estado_jogo.set_aposta(Aposta(), 0);
-            estado_jogo.aleatorizar_maos(LIMITE_FACE);
-            estado_jogo.resetar_ultimas_jogadas();
+            return true;
         }
+        break;
+
+        default:
         break;
     }
 
-    return EXIT_SUCCESS;
+    return false;
 }
 
 bool checa_aposta_valida(const Aposta &nova_aposta, const Estado &estado_jogo)
@@ -383,17 +548,12 @@ int checa_dados_mesa(const Estado &estado_jogo)
 
 }
 
-std::vector<unsigned int> gera_ordem_aleatoria(unsigned int tamanho)
+void gera_ordem_aleatoria()
 {
-    std::vector<unsigned int> vetor_aleatorio(tamanho);
-    for (unsigned int i = 0; i < tamanho; ++i)
-        vetor_aleatorio[i] = i;
-
     std::random_device rd;
     std::mt19937 gen(rd());
-    shuffle(vetor_aleatorio.begin(), vetor_aleatorio.end(), gen);
 
-    return vetor_aleatorio;
+    shuffle(estado_servidor.jogadores.begin(), estado_servidor.jogadores.end(), gen);
 }
 
 void envia_estado_mesa(const Estado &estado_jogo)
@@ -402,8 +562,6 @@ void envia_estado_mesa(const Estado &estado_jogo)
     Estado_mesa_msg estado_novo = {0};
     unsigned int tamanho_mensagem = sizeof(estado_novo.rodada) + sizeof(estado_novo.n_dados_aposta) + sizeof(estado_novo.face_dados_aposta) + sizeof(estado_novo.jogador_atual);
     bool sucesso_operacao = true;
-
-    std::cout << "ESTADO MESA SENDO ENVIADO!\n";
 
     estado_novo = 
     {
@@ -432,11 +590,9 @@ void envia_estado_inicial_mesa(const Estado &estado_jogo)
 {
     Estado_inicial_msg estado_inicial = {.header = {}};
     unsigned int tamanho_mensagem = 0, tamanho_mensagem_atual;
-    unsigned int numero_jogadores = estado_jogo.get_numero_jogadores();
+    unsigned int numero_jogadores = estado_servidor.jogadores.size();
     unsigned int n_dados_jogador_atual = 0;
     bool sucesso_operacao = true;
-
-    std::cout << "ESTADO INICIAL SENDO ENVIADO!\n";
 
     estado_inicial.numero_jogadores = numero_jogadores;
     estado_inicial.dados_jogadores = (_dados_jogador*)malloc(numero_jogadores * sizeof(_dados_jogador));
@@ -444,25 +600,24 @@ void envia_estado_inicial_mesa(const Estado &estado_jogo)
 
     for (unsigned int i = 0; i < numero_jogadores; ++i)
     {
-        estado_inicial.dados_jogadores[i].numero_jogador = estado_jogo.get_lista_jogadores()[i].get_numero();
-        estado_inicial.dados_jogadores[i].n_dados = estado_jogo.get_lista_jogadores()[i].get_mao().get_numero_dados();
+        estado_inicial.dados_jogadores[i].numero_jogador = estado_servidor.jogadores[i]->numero;
+        estado_inicial.dados_jogadores[i].n_dados = estado_jogo.get_jogador(estado_servidor.jogadores[i]->numero).get_mao().get_numero_dados();
     }
 
     for (unsigned int i = 0; i < numero_jogadores; ++i)
     {
         tamanho_mensagem_atual = tamanho_mensagem;
-        estado_inicial.numero_jogador_atual = estado_jogo.get_lista_jogadores()[i].get_numero();
-        n_dados_jogador_atual = estado_jogo.get_lista_jogadores()[i].get_mao().get_dados().size();
+        estado_inicial.numero_jogador_atual = estado_servidor.jogadores[i]->numero;
+        n_dados_jogador_atual = estado_jogo.get_jogador(estado_servidor.jogadores[i]->numero).get_mao().get_numero_dados();
         estado_inicial.valor_dados_jogador = (int*)malloc(n_dados_jogador_atual * sizeof(*estado_inicial.valor_dados_jogador));
+        Jogador_cliente* jogador_atual = busca_jogador(estado_inicial.numero_jogador_atual);
 
         for(unsigned int j = 0; j < n_dados_jogador_atual; ++j)
-            estado_inicial.valor_dados_jogador[j] = estado_jogo.get_lista_jogadores()[i].get_mao().get_dados()[j].get_valor();
+            estado_inicial.valor_dados_jogador[j] = estado_jogo.get_jogador(estado_inicial.numero_jogador_atual).get_mao().get_dados()[j].get_valor();
         
         tamanho_mensagem_atual += n_dados_jogador_atual*sizeof(*estado_inicial.valor_dados_jogador);
         
-        std::cout << tamanho_mensagem_atual << '\n';
-
-        sucesso_operacao = enviar_mensagem(estado_servidor.jogadores[i]->socket, &estado_inicial, tamanho_mensagem_atual, Estado_inicial);
+        sucesso_operacao = enviar_mensagem(jogador_atual->socket, &estado_inicial, tamanho_mensagem_atual, Estado_inicial);
 
         if(!sucesso_operacao)
             estado_servidor.jogadores[i]->conectado = false;
@@ -476,26 +631,28 @@ void envia_estado_inicial_mesa(const Estado &estado_jogo)
 bool checa_conexoes(Estado &estado_jogo, unsigned int jogador_atual)
 {
     Desconexao_msg mensagem_desconexao = {};
-    bool jogador_atual_desconectado = false;
+    bool houve_desconexoes = false;
     unsigned int jogadores_desconectados[NUMERO_JOGADORES];
     unsigned int numero_desconectados = 0;
     unsigned tamanho_mensagem = sizeof(unsigned int);
+    unsigned int numero_jogador_removido_atual;
     bool sucesso_operacao = true;
+
+    std::cout << "Enviando heartbeats...\n";
+    for(unsigned int i = 0; i < estado_servidor.jogadores.size(); ++i)
+    {
+        sucesso_operacao = enviar_mensagem(estado_servidor.jogadores[i]->socket, NULL, 0, Heartbeat);
+
+        if(!sucesso_operacao)
+            estado_servidor.jogadores[i]->conectado = false;
+    }
 
     std::cout << "Checando desconexoes!\n";
     for(unsigned int i = 0; i < estado_servidor.jogadores.size(); ++i)
         if(!estado_servidor.jogadores[i]->conectado)
-        {
-            if(estado_servidor.jogadores[i]->numero == jogador_atual)
-                jogador_atual_desconectado = true;
-            
-            std::cout << "Desconectou-se: " << estado_servidor.jogadores[i]->numero << '\n';
-            jogadores_desconectados[numero_desconectados++] = estado_servidor.jogadores[i]->numero;
-            std::cout << "desligando...\n";
-            desligar_jogador_cliente(i);
-            std::cout << "removendo do jogo...\n";
-            estado_jogo.remover_jogador(i);
-            std::cout << "removido!\n";
+        {   
+            numero_jogador_removido_atual = estado_servidor.jogadores[i]->numero;
+            jogadores_desconectados[numero_desconectados++] = numero_jogador_removido_atual;
         }
     
     if(numero_desconectados == 0)
@@ -503,12 +660,20 @@ bool checa_conexoes(Estado &estado_jogo, unsigned int jogador_atual)
         std::cout << "Nenhuma desconexao!\n";
         return false;
     }
+
+    std::cout << "Removendo jogadores desconectados...\n";
+    for(unsigned int i = 0; i < numero_desconectados; ++i)
+    {
+        desligar_jogador_cliente(jogadores_desconectados[i]);
+        estado_jogo.remover_jogador(jogadores_desconectados[i]);
+    }
+
+    houve_desconexoes = true;
     
     tamanho_mensagem += sizeof(unsigned int) * numero_desconectados;
     
     mensagem_desconexao = {.quantia_desconectados = numero_desconectados, .numero_jogadores = jogadores_desconectados};
 
-    std::cout << "Enviando desconectados!!\n";
     for(unsigned int i = 0; i < estado_servidor.jogadores.size(); ++i)
     {
         sucesso_operacao = enviar_mensagem(estado_servidor.jogadores[i]->socket, &mensagem_desconexao, tamanho_mensagem, Desconexao);
@@ -517,19 +682,33 @@ bool checa_conexoes(Estado &estado_jogo, unsigned int jogador_atual)
             estado_servidor.jogadores[i]->conectado = false;
     }
 
-    return jogador_atual_desconectado;
+    estado_jogo.resetar_ultimas_jogadas();
+    estado_jogo.aleatorizar_maos(LIMITE_FACE);
+    estado_jogo.set_aposta(Aposta(), 0);
+
+    return houve_desconexoes;
 }
 
-void desligar_jogador_cliente(unsigned int indice)
+void desligar_jogador_cliente(unsigned int numero)
 {
-    std::cout << "desligando socket...\n";
-    shutdown(estado_servidor.jogadores[indice]->socket, SHUT_RDWR);
-    sem_post(&estado_servidor.jogadores[indice]->semaforo);
-    std::cout << "esperando a thread...\n";
-    pthread_join(estado_servidor.jogadores[indice]->thread, nullptr);
-    std::cout << "fechando o socket...\n";
-    close(estado_servidor.jogadores[indice]->socket);
-    std::cout << "tirando da lista...\n";
-    estado_servidor.jogadores.erase(estado_servidor.jogadores.begin() + indice);
-    std::cout << "jogador desligado com sucesso!\n";
+    Jogador_cliente* jogador_desligado = busca_jogador(numero);
+    shutdown(jogador_desligado->socket, SHUT_RDWR);
+    sem_post(&jogador_desligado->semaforo);
+    pthread_join(jogador_desligado->thread, nullptr);
+    close(jogador_desligado->socket);
+
+    for(unsigned int i = 0; i < estado_servidor.jogadores.size(); ++i)
+        if(estado_servidor.jogadores[i]->numero == numero)
+            estado_servidor.jogadores.erase(estado_servidor.jogadores.begin() + i);
+}
+
+Jogador_cliente* busca_jogador(unsigned int numero)
+{
+
+    for(unsigned int i = 0; i < estado_servidor.jogadores.size(); ++i)
+        if(estado_servidor.jogadores[i]->numero == numero)
+            return estado_servidor.jogadores[i].get();
+
+
+    exit(1);
 }

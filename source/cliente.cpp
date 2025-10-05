@@ -25,19 +25,26 @@ int main()
     sem_init(&conexao, 0, 0);
 
     pthread_create(&listener_thread, NULL, thread_listener, &estado_jogo);
-    pthread_create(&talker_thread, NULL, thread_talker, NULL);
+    pthread_create(&talker_thread, NULL, thread_talker, &estado_jogo);
 
     while(conectado_ao_servidor.load())
-    {
-        if(!nova_acao)
-            continue;
-        
-        print_estado(estado_jogo);
+    {   
+        if(nova_acao.load())
+        {
+            print_estado(estado_jogo);
+            nova_acao.store(false);
+        }
 
-        nova_acao.store(false);
+        if(revela_mesa.load())
+        {
+            print_adversarios_detalhado(estado_jogo);
+            revela_mesa.store(false);
+        }
+
     }
 
     cleanup_cliente(SIGINT);
+    return 0;
 }
 
 void cleanup_cliente(int sinal)
@@ -47,12 +54,10 @@ void cleanup_cliente(int sinal)
     pthread_join(listener_thread, nullptr);
     pthread_join(talker_thread, nullptr);
     desbloqueia_teclado(false);
-    exit(0);
 }
 
 void* thread_listener(void* parametros)
 {
-    int socket_servidor;
     struct sockaddr_in info_servidor;
     Mensagem mensagem_recebida;
     Estado_cliente* estado_atualizado = (Estado_cliente*)parametros;
@@ -106,6 +111,9 @@ void* thread_listener(void* parametros)
             {
                 Estado_inicial_msg estado_inicial = {0};
                 estado_inicial = *(Estado_inicial_msg*)mensagem_recebida.conteudo_mensagem;
+                estado_atualizado->n_dados_total = 0;
+                estado_atualizado->adversarios.clear();
+                estado_atualizado->valor_dados_jogador.clear();
 
                 estado_atualizado->numero_jogador_local = estado_inicial.numero_jogador_atual;
 
@@ -129,14 +137,6 @@ void* thread_listener(void* parametros)
                     estado_atualizado->n_dados_total += estado_inicial.dados_jogadores[i].n_dados;
         
                 }
-
-                std::cout << "N_DADOS: " << estado_atualizado->n_dados_total 
-                << '\n' << "N_JOGADOR: " << estado_atualizado->numero_jogador_local << '\n'
-                << "DADOS: ";
-                for (auto dado : estado_atualizado->valor_dados_jogador) {
-                    std::cout << dado << " ";
-                }
-                std::cout << '\n';
             }
             break;
 
@@ -158,11 +158,6 @@ void* thread_listener(void* parametros)
             {
                 Desconexao_msg* lista_desconectados = (Desconexao_msg*)mensagem_recebida.conteudo_mensagem;
 
-                std::cout << "houve desconexoes!\n";
-
-                std::cout << "NUMERO DESCONECTADOS: " << lista_desconectados->quantia_desconectados << '\n';
-
-                std::cout << "NUMERO DO DESCONECTADO: " << lista_desconectados->numero_jogadores[0] << '\n';
                 for(unsigned int i = 0; i < estado_atualizado->adversarios.size(); ++i)
                     for(unsigned int j = 0; j < lista_desconectados->quantia_desconectados; ++j)
                         if(estado_atualizado->adversarios[i].numero == lista_desconectados->numero_jogadores[j])
@@ -170,8 +165,25 @@ void* thread_listener(void* parametros)
                             estado_atualizado->adversarios[i].conectado = false;  
                             estado_atualizado->n_dados_total -= estado_atualizado->adversarios[i].n_dados;
                         }
+                revela_mesa.store(true);             
+            }
+            break;
+
+            case Revela_mesa:
+            {
+                Revela_mesa_msg* lista_dados = (Revela_mesa_msg*)mensagem_recebida.conteudo_mensagem;
+                                
+                for(unsigned int i = 0; i < lista_dados->numero_jogadores; ++i)
+                    if(lista_dados->jogadores[i].numero_jogador != estado_atualizado->numero_jogador_local)
+                    {   
+                        for(unsigned j = 0; j < estado_atualizado->adversarios.size(); ++j)
+                            if(estado_atualizado->adversarios[j].numero == lista_dados->jogadores[i].numero_jogador)
+                                estado_atualizado->adversarios[j].valor_dados.assign(lista_dados->jogadores[i].valor_dados, lista_dados->jogadores[i].valor_dados + lista_dados->jogadores[i].n_dados);
+                    }
                 
-                nova_acao.store(true);
+                vencedor_ultima_rodada = lista_dados->numero_jogador_vencedor;
+
+                revela_mesa.store(true);
             }
             break;
 
@@ -190,6 +202,7 @@ void* thread_listener(void* parametros)
 
 void* thread_talker(void* parametros)
 {
+    Estado_cliente* estado_atual = (Estado_cliente*)parametros;
     char buffer[MAXIMO_BUFFER];
     char escolha;
     int acao_tomada;
@@ -219,7 +232,12 @@ void* thread_talker(void* parametros)
         switch(acao_tomada)
         {
             case AUMENTAR_APOSTA:
-            {                
+            {        
+                if(estado_atual->jogador_atual != estado_atual->numero_jogador_local)
+                {
+                    std::cout << "Espere sua vez!\n";
+                    continue;  
+                }
                 Aposta_msg aposta_enviada;
                 unsigned int tamanho_mensagem = sizeof(aposta_enviada.face_dados_aposta) + sizeof(aposta_enviada.n_dados_aposta);
              
@@ -231,11 +249,7 @@ void* thread_talker(void* parametros)
                     break;
 
                 if(sscanf(buffer, "%dx%d", &aposta_enviada.n_dados_aposta, &aposta_enviada.face_dados_aposta) == 2)
-                {
-                    std::cout << "Aposta enviada: " << aposta_enviada.n_dados_aposta << "x" << aposta_enviada.face_dados_aposta << '\n';
-                    std::cout << "Texto lido: " << buffer << '\n';
                     enviar_mensagem(socket_servidor, &aposta_enviada, tamanho_mensagem, Aumento_aposta);
-                }
 
                 desbloqueia_teclado(true);
 
@@ -244,12 +258,23 @@ void* thread_talker(void* parametros)
 
             case DUVIDAR:
             {
+                if(estado_atual->jogador_atual != estado_atual->numero_jogador_local)
+                {
+                    std::cout << "Espere sua vez!\n";
+                    continue;  
+                }
+
                 enviar_mensagem(socket_servidor, NULL, 0, Duvida);
             }
             break;
 
             case CRAVAR:
             {
+                if(estado_atual->jogador_atual != estado_atual->numero_jogador_local)
+                {
+                    std::cout << "Espere sua vez!\n";
+                    continue;  
+                }
                 enviar_mensagem(socket_servidor, NULL, 0, Cravada);
             }
             break;
@@ -284,61 +309,6 @@ void desbloqueia_teclado(bool ativar)
     else 
         tcsetattr(STDIN_FILENO, TCSANOW, &oldt); // Restaura as configurações originais do teclado
 }
-
-// void print_estado(const Estado_cliente& estado) 
-// {
-//     using std::cout;
-//     using std::endl;
-
-//     // Cabeçalho do estado
-//     cout << "\n╔══════════════════════════════════╗\n";
-//     cout << "║         ESTADO DO JOGO           ║\n";
-//     cout << "╚══════════════════════════════════╝\n\n";
-
-//     // Informplkjnhbv ações da rodada
-//     cout << "Rodada: " << estado.rodada << endl;
-//     cout << "Jogador atual: " << estado.jogador_atual << endl;
-//     cout << "Dados totais na mesa: " << estado.n_dados_total << endl;
-
-//     if (estado.n_dados_aposta > 0) {
-//         cout << "Última aposta: " 
-//              << estado.n_dados_aposta << " dado(s) de face " 
-//              << estado.face_dados_aposta << endl;
-//     } else {
-//         cout << "Nenhuma aposta feita ainda." << endl;
-//     }
-
-//     // Seus dados
-//     cout << "\n╔══════════════════════════════════╗\n";
-//     cout << "║          SEUS DADOS              ║\n";
-//     cout << "╚══════════════════════════════════╝\n";
-
-//     cout << "Jogador " << estado.numero_jogador_local << ": [ ";
-//     for (int valor : estado.valor_dados_jogador) {
-//         cout << valor << " ";
-//     }
-//     cout << "]" << endl;
-
-//     // Adversários
-//     cout << "\n╔══════════════════════════════════╗\n";
-//     cout << "║          ADVERSÁRIOS             ║\n";
-//     cout << "╚══════════════════════════════════╝\n";
-
-//     for (size_t i = 0; i < NUMERO_JOGADORES-1; i++) // lista_jogadores tem NUMERO_JOGADORES-1
-//     {
-//         const Jogadores_adversarios& adversario = estado.adversarios[i];
-
-//         if (adversario.conectado) {
-//             cout << "Jogador " << adversario.numero
-//                  << " -> Dados restantes: " << adversario.n_dados << endl;
-//         } else {
-//             cout << "Jogador " << adversario.numero
-//                  << " -> DESCONECTADO" << endl;
-//         }
-//     }
-
-//     cout << "\n════════════════════════════════════\n" << endl;
-// }
 
 void print_estado(const Estado_cliente& estado) 
 {
@@ -403,4 +373,99 @@ void print_estado(const Estado_cliente& estado)
     cout << "[4] Sair do jogo\n";
 
     cout << "\n════════════════════════════════════\n" << endl;
+}
+
+void print_adversarios_detalhado(const Estado_cliente& estado)
+{
+    using std::cout;
+    using std::endl;
+
+    // Representações ASCII para cada face de dado (1–6)
+    const std::vector<std::vector<std::string>> dados_ascii = {
+        { // Dado 1
+            "┌─────┐",
+            "│     │",
+            "│  •  │",
+            "│     │",
+            "└─────┘"
+        },
+        { // Dado 2
+            "┌─────┐",
+            "│•    │",
+            "│     │",
+            "│    •│",
+            "└─────┘"
+        },
+        { // Dado 3
+            "┌─────┐",
+            "│•    │",
+            "│  •  │",
+            "│    •│",
+            "└─────┘"
+        },
+        { // Dado 4
+            "┌─────┐",
+            "│•   •│",
+            "│     │",
+            "│•   •│",
+            "└─────┘"
+        },
+        { // Dado 5
+            "┌─────┐",
+            "│•   •│",
+            "│  •  │",
+            "│•   •│",
+            "└─────┘"
+        },
+        { // Dado 6
+            "┌─────┐",
+            "│•   •│",
+            "│•   •│",
+            "│•   •│",
+            "└─────┘"
+        }
+    };
+
+    cout << "\n╔══════════════════════════════════╗\n";
+    cout << "║       ADVERSÁRIOS DETALHADOS     ║\n";
+    cout << "╚══════════════════════════════════╝\n\n";
+
+    for (const auto& adversario : estado.adversarios)
+    {
+        cout << "Jogador " << adversario.numero << " ";
+
+        if (adversario.conectado)
+            cout << "(Conectado, " << adversario.n_dados << " dado(s))\n";
+        else
+        {
+            cout << "DESCONECTADO\n\n";
+            continue;
+        }
+
+        if (adversario.valor_dados.empty())
+        {
+            cout << "Sem dados visíveis.\n\n";
+            continue;
+        }
+
+        // Imprimir os dados lado a lado em ASCII
+        size_t linhas = dados_ascii[0].size();
+        for (size_t linha = 0; linha < linhas; ++linha)
+        {
+            for (int valor : adversario.valor_dados)
+            {
+                int idx = std::clamp(valor, 1, 6) - 1;
+                cout << dados_ascii[idx][linha] << " ";
+            }
+            cout << '\n';
+        }
+        cout << '\n';
+    }
+
+    cout << "════════════════════════════════════\n" << endl;
+
+    cout << "Jogador " << vencedor_ultima_rodada << " e o vencedor!\n";
+
+    if(vencedor_ultima_rodada == estado.numero_jogador_local)
+        cout << "Parabens, voce venceu a rodada!\n";
 }

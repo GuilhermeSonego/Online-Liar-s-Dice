@@ -16,7 +16,7 @@ BIN_DIR := exec
 # =============================
 
 SRC_TESTE    := $(SRC_DIR)/jogo.cpp 
-SRC_CLIENTE  := $(SRC_DIR)/cliente.cpp $(SRC_DIR)/protocolo.cpp $(SRC_DIR)/jogo.cpp #$(SRC_DIR)/ui.cpp
+SRC_CLIENTE  := $(SRC_DIR)/cliente.cpp $(SRC_DIR)/protocolo.cpp $(SRC_DIR)/jogo.cpp
 SRC_SERVIDOR := $(SRC_DIR)/server.cpp $(SRC_DIR)/jogo.cpp $(SRC_DIR)/protocolo.cpp
 
 # Transformar .cpp → .o em obj/
@@ -35,7 +35,7 @@ BIN_SERVIDOR := $(BIN_DIR)/servidor
 # Regras principais
 # =============================
 
-all: teste producao cliente servidor
+all: teste cliente servidor
 
 # Regras para cada versão
 teste:    $(BIN_TESTE)
@@ -56,6 +56,21 @@ $(BIN_SERVIDOR): $(OBJ_SERVIDOR) | $(BIN_DIR)
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+# =============================
+# Criação automática das pastas
+# =============================
+
+$(OBJ_DIR):
+	mkdir -p $(OBJ_DIR)
+
+$(BIN_DIR):
+	mkdir -p $(BIN_DIR)
+
+# =============================
 # Limpeza
+# =============================
+
 clean:
-	rm -rf $(OBJ_DIR)/* $(BIN_DIR)/*
+	rm -rf $(OBJ_DIR) $(BIN_DIR)
+
+.PHONY: all teste cliente servidor clean

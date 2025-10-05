@@ -10,7 +10,8 @@ enum Tipos_Mensagem
     Desconexao,
     Aumento_aposta,
     Duvida,
-    Cravada
+    Cravada,
+    Revela_mesa
 };
 
 #define HEADER_TAMANHO (sizeof(unsigned int) + sizeof(unsigned int))
@@ -59,6 +60,21 @@ struct Aposta_msg
     Header_protocolo header;
     unsigned int n_dados_aposta;
     unsigned int face_dados_aposta;
+};
+
+struct _dados_revelados_jogador
+{
+    unsigned int numero_jogador;
+    unsigned int n_dados;
+    int* valor_dados;
+};
+
+struct Revela_mesa_msg
+{
+    Header_protocolo header;
+    unsigned int numero_jogadores;
+    unsigned int numero_jogador_vencedor;
+    struct _dados_revelados_jogador* jogadores;
 };
 
 typedef struct _mensagem_t

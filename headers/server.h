@@ -9,16 +9,15 @@
 #include "jogo.h"
 
 #define TAMANHO_MAOS 3
-#define NUMERO_JOGADORES 4
+#define NUMERO_JOGADORES 2
 #define LIMITE_FACE 6
 #define MENSAGEM_CLIENTE sizeof(Acao_resposta)
-#define PORTA 4621
+#define PORTA 4610
 
 typedef struct _estrutura_acoes
 {
     int acao_escolhida;
-    int valores_acao[2];
-    bool novo_valor;
+    unsigned int valores_acao[2];
 
 } Acao_resposta;
 
@@ -51,6 +50,7 @@ typedef struct _estado_thread
 
 enum Acoes
 {
+    NADA = 0,
     AUMENTAR_APOSTA = 1,
     DUVIDAR = 2,
     CRAVAR = 3,
@@ -87,15 +87,16 @@ void* main_jogador(void* parametros);
 void* comunicacao_socket(void* parametros);
 
 //Funções associadas ao jogo. São utilitárias e auxiliam no fluxo do processamento do jogo pelo servidor.
-std::vector<unsigned int> gera_ordem_aleatoria(unsigned int tamanho);
-int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int indice_jogador_atual);
-bool esperar_acao(Acao_resposta &acao_recebida, Estado &estado_jogo, sem_t &semaforo_servidor, sem_t &semaforo_jogador_atual, unsigned int jogador_atual);
+void gera_ordem_aleatoria();
+unsigned int executar_acao(Acao_resposta acao, Estado &estado_jogo, unsigned int numero_jogador_atual, unsigned int &turno_jogador);
+bool checa_acao_valida(Acao_resposta& acao,const Estado &estado_jogo);
+bool esperar_acao(Acao_resposta &acao_recebida, Estado &estado_jogo, Jogador_cliente* jogador_atual);
 bool checa_aposta_valida(const Aposta &nova_aposta, const Estado &estado_jogo);
 int checa_dados_mesa(const Estado &estado_jogo);
 void envia_estado_inicial_mesa(const Estado &estado_jogo);
 void envia_estado_mesa(const Estado &estado_jogo);
 bool checa_conexoes(Estado &estado_jogo, unsigned int jogador_atual);
-void desligar_jogador_cliente(unsigned int indice);
-
+void desligar_jogador_cliente(unsigned int numero);
+Jogador_cliente* busca_jogador(unsigned int numero);
 
 #endif //_server_h
