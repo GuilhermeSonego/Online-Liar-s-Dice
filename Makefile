@@ -14,7 +14,6 @@ BIN_DIR := exec
 # =============================
 # Arquivos fonte por versão
 # =============================
-
 SRC_TESTE    := $(SRC_DIR)/jogo.cpp 
 SRC_CLIENTE  := $(SRC_DIR)/cliente.cpp $(SRC_DIR)/protocolo.cpp $(SRC_DIR)/jogo.cpp
 SRC_SERVIDOR := $(SRC_DIR)/server.cpp $(SRC_DIR)/jogo.cpp $(SRC_DIR)/protocolo.cpp
@@ -35,7 +34,7 @@ BIN_SERVIDOR := $(BIN_DIR)/servidor
 # Regras principais
 # =============================
 
-all: teste cliente servidor
+all: cliente servidor
 
 # Regras para cada versão
 teste:    $(BIN_TESTE)
@@ -73,4 +72,19 @@ $(BIN_DIR):
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
 
-.PHONY: all teste cliente servidor clean
+# =============================
+# Execução (make run <alvo>)
+# =============================
+
+run:
+	@if [ "$(filter cliente,$(MAKECMDGOALS))" ]; then \
+		$(MAKE) cliente && echo ">> Executando cliente..." && ./$(BIN_CLIENTE); \
+	elif [ "$(filter servidor,$(MAKECMDGOALS))" ]; then \
+		$(MAKE) servidor && echo ">> Executando servidor..." && ./$(BIN_SERVIDOR); \
+	elif [ "$(filter teste,$(MAKECMDGOALS))" ]; then \
+		$(MAKE) teste && echo ">> Executando teste..." && ./$(BIN_TESTE); \
+	else \
+		echo "Uso: make run [cliente|servidor|teste]"; \
+	fi
+
+.PHONY: all teste cliente servidor clean run

@@ -1,6 +1,7 @@
 #ifndef _protocolo_h
 #define _protocolo_h
 
+// Definição dos tipos de mensagem do protocolo.
 enum Tipos_Mensagem
 {
     Falha,
@@ -11,8 +12,11 @@ enum Tipos_Mensagem
     Aumento_aposta,
     Duvida,
     Cravada,
-    Revela_mesa
+    Revela_mesa,
+    Vencedor
 };
+
+// Estruturas de cada mensagem e auxiliares. Atributos da estrutura estão ordenados conforme a ordem do protocolo.
 
 #define HEADER_TAMANHO (sizeof(unsigned int) + sizeof(unsigned int))
 struct Header_protocolo
@@ -77,20 +81,32 @@ struct Revela_mesa_msg
     struct _dados_revelados_jogador* jogadores;
 };
 
+struct Vencedor_msg
+{
+    Header_protocolo header;
+    unsigned int numero_jogador_vencedor;
+};
+
 typedef struct _mensagem_t
 {
     void* conteudo_mensagem;
     int tipo_mensagem;
 } Mensagem;
 
+// Funções que definem a escrita e leitura de estruturas de mensagens para e de buffers.
 bool enviar_mensagem(int socket_destino, const void *informacoes, unsigned int tamanho_mensagem, int tipo_mensagem);
 Mensagem receber_mensagem(int socket_destino);
+void free_mensagem(Mensagem mensagem_usada);
+
+// Funções auxiliares de escrita em estrutura e buffer.
 void escreve_pro_buffer(char* &buffer, const void* valor, unsigned int tamanho);
 void escreve_para_campo(void* campo, int tamanho_campo, const void* valor, unsigned int tamanho);
 void escreve_serializado(char* &buffer, unsigned int valor);
 void escreve_desserializado(void* campo, char* &buffer, unsigned int tamanho);
 void escreve_cabecalho(char* &buffer, const struct Header_protocolo &cabecalho);
+
+// Funções de envio e recebimento via socket propriamente ditas.  
 bool send_completo(int socket, const void *buffer, unsigned int tamanho);
 bool le_para_buffer(int socket, char* buffer, unsigned int tamanho);
-void free_mensagem(Mensagem mensagem_usada);
+
 #endif //_protocolo_h

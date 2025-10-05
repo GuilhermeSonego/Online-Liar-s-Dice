@@ -15,43 +15,34 @@
 #include <poll.h>
 #include <termios.h>
 
-
 int main()
 {
+    // Criação da variável que irá armazenar o estado do jogo.
     Estado_cliente estado_jogo = {};
-    //Definição de uma função responsável pelo desligamento do programa pela evocação do CTRL + C.
+
+    // Definição de uma função responsável pelo desligamento do programa pela evocação do CTRL + C.
     signal(SIGINT, cleanup_cliente);
 
     sem_init(&conexao, 0, 0);
 
+    // Criamos as threads de comunicação entre o cliente e o servidor.
     pthread_create(&listener_thread, NULL, thread_listener, &estado_jogo);
     pthread_create(&talker_thread, NULL, thread_talker, &estado_jogo);
 
-    while(conectado_ao_servidor.load())
-    {   
-        if(nova_acao.load())
-        {
-            print_estado(estado_jogo);
-            nova_acao.store(false);
-        }
-
-        if(revela_mesa.load())
-        {
-            print_adversarios_detalhado(estado_jogo);
-            revela_mesa.store(false);
-        }
-
-    }
+    // O programa irá rodar enquanto a conexão estiver ativa
+    while(conectado_ao_servidor.load());
 
     cleanup_cliente(SIGINT);
     return 0;
 }
 
+// Função para encerramento limpo do cliente
 void cleanup_cliente(int sinal)
 {
     conectado_ao_servidor.store(false);
     shutdown(socket_servidor, SHUT_RDWR);
     pthread_join(listener_thread, nullptr);
+    sem_post(&conexao);
     pthread_join(talker_thread, nullptr);
     desbloqueia_teclado(false);
 }
@@ -68,8 +59,8 @@ void* thread_listener(void* parametros)
     socket_servidor = socket(AF_INET, SOCK_STREAM, 0);
     info_servidor = {.sin_family = AF_INET, .sin_port = htons(PORTA)};
 
-    //Checagens de conexao.
-    if(inet_pton(AF_INET, "127.0.0.1", &info_servidor.sin_addr) <= 0)
+    // Checagens de conexao. IP do servidor é definido no header.
+    if(inet_pton(AF_INET, IP_SERVIDOR, &info_servidor.sin_addr) <= 0)
     {
         std::cout << "Endereco invalido\n";
         conectado_ao_servidor.store(false);
@@ -81,17 +72,22 @@ void* thread_listener(void* parametros)
         conectado_ao_servidor.store(false);
     }
 
+    // Definimos que queremos vigiar o socket por novas mensagens.
     evento = {.fd = socket_servidor, .events = POLLIN, .revents = 0};
 
+    // Avisa a thread talker que agora é possível enviar mensagens.
     sem_post(&conexao);
 
     while (conectado_ao_servidor.load())
     {
+        // Definimos um timeout de 0.5s para novas mensagens, permitindo a checagem de conexão ao servidor nessa frequência.
         retorno_evento = poll(&evento, 1, 500);
 
+        // Em caso de erro a thread termina.
         if(retorno_evento < 0)
             break;
         
+        // Se não ela volta a checar a conexão
         if(retorno_evento == 0)
             continue;
         
@@ -99,6 +95,7 @@ void* thread_listener(void* parametros)
         if(evento.revents & POLLIN)
             mensagem_recebida = receber_mensagem(socket_servidor);
 
+        // A depender do tipo de mensagem recebida, o cliente atualiza as informações locais e as printa atualizadas para o jogador
         switch(mensagem_recebida.tipo_mensagem)
         {
             case Falha:
@@ -135,7 +132,6 @@ void* thread_listener(void* parametros)
                     }
 
                     estado_atualizado->n_dados_total += estado_inicial.dados_jogadores[i].n_dados;
-        
                 }
             }
             break;
@@ -150,7 +146,8 @@ void* thread_listener(void* parametros)
                 estado_atualizado->n_dados_aposta = estado_mesa.n_dados_aposta;
                 estado_atualizado->face_dados_aposta = estado_mesa.face_dados_aposta;
 
-                nova_acao.store(true);
+                print_estado(*estado_atualizado);
+
             }
             break;
 
@@ -165,7 +162,7 @@ void* thread_listener(void* parametros)
                             estado_atualizado->adversarios[i].conectado = false;  
                             estado_atualizado->n_dados_total -= estado_atualizado->adversarios[i].n_dados;
                         }
-                revela_mesa.store(true);             
+                    
             }
             break;
 
@@ -181,9 +178,19 @@ void* thread_listener(void* parametros)
                                 estado_atualizado->adversarios[j].valor_dados.assign(lista_dados->jogadores[i].valor_dados, lista_dados->jogadores[i].valor_dados + lista_dados->jogadores[i].n_dados);
                     }
                 
-                vencedor_ultima_rodada = lista_dados->numero_jogador_vencedor;
 
-                revela_mesa.store(true);
+                vencedor_ultima_rodada = lista_dados->numero_jogador_vencedor;
+                print_jogadores_detalhado(*estado_atualizado);
+                sleep(4);
+            }
+            break;
+
+            case Vencedor:
+            {
+                Vencedor_msg* jogador_vencedor = (Vencedor_msg*)mensagem_recebida.conteudo_mensagem;
+
+                print_vencedor(jogador_vencedor->numero_jogador_vencedor);
+                sleep(4);                
             }
             break;
 
@@ -194,8 +201,9 @@ void* thread_listener(void* parametros)
         free_mensagem(mensagem_recebida);
     }
 
-    std::cout << "Voce foi desconectado!\n";
+    std::cout << "Você foi desconectado!\n";
 
+    // Ao fim da vida da thread ela libera o socket.
     close(socket_servidor);
     return nullptr;
 }
@@ -209,12 +217,15 @@ void* thread_talker(void* parametros)
     struct pollfd evento = {.fd = STDIN_FILENO, .events = POLLIN, .revents = 0};
     int retorno_evento;
 
+    // Esperamos a thread listener se conectar ao servidor.
     sem_wait(&conexao);
 
+    // Destravamos o estado de bloqueante do teclado para não ser necessário apertar ENTER ao escolher as opções
     desbloqueia_teclado(true);
 
     while(conectado_ao_servidor.load())
     {        
+        // Novamente um timeout para checagem da conexão com o servidor.
         retorno_evento = poll(&evento, 1, 500);
 
         if(retorno_evento < 0)
@@ -229,6 +240,7 @@ void* thread_talker(void* parametros)
 
         acao_tomada = (escolha - '0');
 
+        // Com base na ação escolhida pelo jogador, uma mensagem diferente é enviada ao servidor.
         switch(acao_tomada)
         {
             case AUMENTAR_APOSTA:
@@ -281,7 +293,7 @@ void* thread_talker(void* parametros)
 
             case SAIR:
             {
-                std::cout << "saindo...\n";
+                std::cout << "Saindo do jogo...\n";
                 conectado_ao_servidor.store(false);
             }
             break;
@@ -375,7 +387,7 @@ void print_estado(const Estado_cliente& estado)
     cout << "\n════════════════════════════════════\n" << endl;
 }
 
-void print_adversarios_detalhado(const Estado_cliente& estado)
+void print_jogadores_detalhado(const Estado_cliente& estado)
 {
     using std::cout;
     using std::endl;
@@ -427,9 +439,36 @@ void print_adversarios_detalhado(const Estado_cliente& estado)
     };
 
     cout << "\n╔══════════════════════════════════╗\n";
-    cout << "║       ADVERSÁRIOS DETALHADOS     ║\n";
+    cout << "║       JOGADORES DETALHADOS       ║\n";
     cout << "╚══════════════════════════════════╝\n\n";
 
+    // ==========================
+    // Exibir dados do jogador local
+    // ==========================
+    cout << "Você (Jogador " << estado.numero_jogador_local << ")\n";
+
+    if (estado.valor_dados_jogador.empty())
+    {
+        cout << "Sem dados disponíveis.\n\n";
+    }
+    else
+    {
+        size_t linhas = dados_ascii[0].size();
+        for (size_t linha = 0; linha < linhas; ++linha)
+        {
+            for (int valor : estado.valor_dados_jogador)
+            {
+                int idx = std::clamp(valor, 1, 6) - 1;
+                cout << dados_ascii[idx][linha] << " ";
+            }
+            cout << '\n';
+        }
+        cout << '\n';
+    }
+
+    // ==========================
+    // Exibir adversários
+    // ==========================
     for (const auto& adversario : estado.adversarios)
     {
         cout << "Jogador " << adversario.numero << " ";
@@ -448,7 +487,6 @@ void print_adversarios_detalhado(const Estado_cliente& estado)
             continue;
         }
 
-        // Imprimir os dados lado a lado em ASCII
         size_t linhas = dados_ascii[0].size();
         for (size_t linha = 0; linha < linhas; ++linha)
         {
@@ -464,8 +502,28 @@ void print_adversarios_detalhado(const Estado_cliente& estado)
 
     cout << "════════════════════════════════════\n" << endl;
 
-    cout << "Jogador " << vencedor_ultima_rodada << " e o vencedor!\n";
+    // ==========================
+    // Resultado da rodada
+    // ==========================
+    cout << "Jogador " << vencedor_ultima_rodada << " é o vencedor da rodada!\n";
 
-    if(vencedor_ultima_rodada == estado.numero_jogador_local)
-        cout << "Parabens, voce venceu a rodada!\n";
+    if (vencedor_ultima_rodada == estado.numero_jogador_local)
+        cout << "Parabéns, você venceu a rodada!\n";
+
+    cout << "\n════════════════════════════════════\n" << endl;
+}
+
+void print_vencedor(unsigned int vencedor)
+{
+    using std::cout;
+    using std::endl;
+
+    // Moldura e título
+    cout << "\n╔══════════════════════════════════╗\n";
+    cout << "║          RESULTADO FINAL         ║\n";
+    cout << "╚══════════════════════════════════╝\n\n";
+
+    // Texto principal
+    cout << "Parabéns! Jogador " << vencedor << " é o grande vencedor da partida! \n";
+    cout << "════════════════════════════════════\n" << endl;
 }

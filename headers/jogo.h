@@ -5,6 +5,8 @@
 #include <iostream>
 #include <random>
 
+// Biblioteca de definição de objetos do jogo
+
 class Dado
 {
     private:
@@ -153,8 +155,11 @@ class Estado
     void aleatorizar_maos(unsigned int quantidade_lados);
     void tirar_dado_jogador(unsigned int numero_jogador) {this->get_jogador(numero_jogador).perder_dado();}
     void tirar_dado_ultimo_jogador() {this->tirar_dado_jogador(_jogador_aposta_atual);}
+    void resetar_maos(unsigned int limite_face) {for(unsigned int i = 0; i < this->_jogadores.size(); ++i)this->_jogadores[i].set_mao(Mao(_tamanho_maos, limite_face));}
     void resetar_ultimas_jogadas() {this->_buffer_jogadas.clear();}
     void remover_jogador(unsigned int numero);
+    void print_obj() const;
+    void print_tudo() const;
 
     //Getters
     const unsigned int get_turno_atual() const {return _turno_atual;}
@@ -181,10 +186,6 @@ class Estado
     //Sobrecarga de Operadores
     void operator++() {this->_turno_atual++;}
     void operator++(int) {this->_turno_atual++;}
-
-    // DEBUG
-    void print_obj() const;
-    void print_tudo() const;
 };
 
 #endif //_jogo_h

@@ -5,14 +5,17 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+// Função de envio das mensagens do protocolo
 bool enviar_mensagem(int socket_destino, const void *informacoes, unsigned int tamanho_mensagem, int tipo_mensagem)
 {
+    // Header definindo o tipo da mensagem e seu tamanho como passados para a função
     Header_protocolo header = {.tamanho_mensagem = tamanho_mensagem, .tipo_mensagem = tipo_mensagem};
     bool sucesso_escrita = true;
     unsigned tamanho_total_buffer = tamanho_mensagem + HEADER_TAMANHO;
     char* buffer_saida = (char*)malloc(tamanho_total_buffer);
     char* itera_buffer = buffer_saida;
 
+    // Procedimentos de escrita do buffer de envio conforme o tipo da mensagem
     switch(tipo_mensagem)
     {
         case Heartbeat:
@@ -114,16 +117,27 @@ bool enviar_mensagem(int socket_destino, const void *informacoes, unsigned int t
         }
         break;
 
+        case Vencedor:
+        {
+            Vencedor_msg* buffer_entrada = (Vencedor_msg*)informacoes;
+
+            escreve_cabecalho(itera_buffer, header);
+            escreve_serializado(itera_buffer, buffer_entrada->numero_jogador_vencedor);
+        }
+        break;
+
         default:
         break;
     }
 
+    // Envio da mensagem completa e liberação do buffer enviado
     sucesso_escrita = send_completo(socket_destino, buffer_saida, tamanho_total_buffer);
     free(buffer_saida);
 
     return sucesso_escrita;
 }
 
+// Função de recebimento e leitura das mensagens enviadas do protocolo.
 Mensagem receber_mensagem(int socket_destino)
 {
     char buffer_header[HEADER_TAMANHO];
@@ -133,6 +147,7 @@ Mensagem receber_mensagem(int socket_destino)
     Mensagem mensagem_recebida = {};
     bool sucesso_leitura = true;
 
+    // Leitura do header da mensagem para definição do tipo da mensagem e o tamanho do restante da mensagem.
     sucesso_leitura = le_para_buffer(socket_destino, buffer_header, HEADER_TAMANHO);
 
     if(!sucesso_leitura)
@@ -147,10 +162,12 @@ Mensagem receber_mensagem(int socket_destino)
         .tipo_mensagem = (int)ntohl(header_mensagem.tipo_mensagem)};
 
 
+    // Alocação do buffer de entrada conforme o tamanho da mensagem a ser recebida.
     buffer_conteudo_mensagem = (char*)malloc(header_mensagem.tamanho_mensagem);
     itera_buffer = buffer_conteudo_mensagem;
     mensagem_recebida.tipo_mensagem = header_mensagem.tipo_mensagem;
 
+    // Procedimentos de conversão do buffer de entrada da mensagem recebida para a estrutura da mensagem.
     switch(header_mensagem.tipo_mensagem)
     {
         case Heartbeat:
@@ -303,45 +320,69 @@ Mensagem receber_mensagem(int socket_destino)
         }
         break;
 
+        case Vencedor:
+        {
+            Vencedor_msg* estrutura_recebida = (Vencedor_msg*)malloc(sizeof(Vencedor_msg));
+
+            sucesso_leitura = le_para_buffer(socket_destino, buffer_conteudo_mensagem, header_mensagem.tamanho_mensagem);
+
+            if(!sucesso_leitura)
+            {   
+                mensagem_recebida.tipo_mensagem = Falha;
+                break;
+            }
+
+            escreve_desserializado(&estrutura_recebida->numero_jogador_vencedor, itera_buffer, sizeof(estrutura_recebida->numero_jogador_vencedor));
+
+            mensagem_recebida.conteudo_mensagem = estrutura_recebida;
+        }
+        break;
+
         default:
         break;
     }
 
+    // Liberação do buffer usado para armazenamento da mensagem recebida.
     free(buffer_conteudo_mensagem);
     return mensagem_recebida;
 }
 
-
+// Função de escrita para o buffer e prosseguimento do ponteiro.
 void escreve_pro_buffer(char* &buffer, const void* valor, unsigned int tamanho)
 {
     memcpy(buffer, valor, tamanho);
     buffer += tamanho;
 }
 
+// Função de escrita do buffer para a estrutura de recebimento da mensagem.
 void escreve_para_campo(void* campo, char* &buffer, unsigned int tamanho)
 {
     memcpy(campo, buffer, tamanho);
     buffer += tamanho;
 }
 
+// Função de serialização dos dados.
 void escreve_serializado(char* &buffer, unsigned int valor)
 {
     valor = htonl(valor);
     escreve_pro_buffer(buffer, &valor, sizeof(valor));
 }
 
+// Função de desserilização dos dados.
 void escreve_desserializado(void* campo, char* &buffer, unsigned int tamanho)
 {
     escreve_para_campo(campo, buffer, tamanho);
     *(unsigned int*)campo = ntohl(*(unsigned int*)campo);
 }
 
+// Função utilitária padrão de escrita do cabeçalho do protocolo da mensagem. 
 void escreve_cabecalho(char* &buffer, const struct Header_protocolo &cabecalho)
 {
     escreve_serializado(buffer, cabecalho.tamanho_mensagem);
     escreve_serializado(buffer, cabecalho.tipo_mensagem);
 }
 
+// Função de leitura do número de dados esperados. No caso de erro, retorna falso para alertar o chamador.
 bool le_para_buffer(int socket, char* buffer, unsigned int tamanho)
 {
     unsigned int bytes_lidos = 0;
@@ -359,6 +400,7 @@ bool le_para_buffer(int socket, char* buffer, unsigned int tamanho)
     return true;
 }
 
+// Função de envio da mensagem inteira. No caso de erro, retorna falso para alertar o chamador. Define também o não encerramento em caso de erro.
 bool send_completo(int socket, const void *buffer, unsigned int tamanho) 
 {
     unsigned int total = 0;
@@ -380,6 +422,7 @@ bool send_completo(int socket, const void *buffer, unsigned int tamanho)
     return true;
 }
 
+// Funções para desalocação das estruturas de mensagem recebidas. Só é necessário para mensagens com tamanho > 0.
 void free_mensagem(Mensagem mensagem_usada)
 {
     switch(mensagem_usada.tipo_mensagem)
@@ -429,6 +472,14 @@ void free_mensagem(Mensagem mensagem_usada)
             free(ponteiro_revela_mesa->jogadores);
             free(ponteiro_revela_mesa);
             
+        }
+        break;
+
+        case Vencedor:
+        {
+            Vencedor_msg* ponteiro_vencedor = (Vencedor_msg*)mensagem_usada.conteudo_mensagem;
+
+            free(ponteiro_vencedor);
         }
         break;
 
